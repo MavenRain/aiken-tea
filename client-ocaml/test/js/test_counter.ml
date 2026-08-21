@@ -1,5 +1,5 @@
-(* Emulator suite for the OCaml TEA client runtime; the port of
-   client/test/counter.test.ts. The acceptance tests are also the
+(* Emulator suite for the OCaml TEA client runtime. The acceptance
+   tests are also the
    mirror-parity oracle: every dispatched transition is re-verified
    on-chain by the Aiken validator, so an OCaml/Aiken `update`
    divergence fails the test. The reject tests hand-build transactions

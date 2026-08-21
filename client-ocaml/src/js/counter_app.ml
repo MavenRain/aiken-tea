@@ -1,5 +1,5 @@
 (* Bind the pure counter app to its compiled validator (from
-   plutus.json); the OCaml port of counterApp in client/src/counter.ts. *)
+   plutus.json). *)
 
 open Tea_pure
 

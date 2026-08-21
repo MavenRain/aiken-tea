@@ -1,5 +1,5 @@
-(* Generic Elm-Architecture (TEA) client runtime for Cardano; the
-   OCaml port of client/src/tea.ts. The on-chain half (lib/tea.ak)
+(* Generic Elm-Architecture (TEA) client runtime for Cardano.
+   The on-chain half (lib/tea.ak)
    verifies one TEA step per transaction; this half produces those
    transactions. [dispatch] computes the next model locally with the
    mirrored pure [update] (the optimistic update), then submits a
