@@ -1,0 +1,5 @@
+(executable
+ (name test_counter)
+ (modules test_counter)
+ (modes js)
+ (libraries tea_pure tea_client js_of_ocaml))

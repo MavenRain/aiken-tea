@@ -6,3 +6,5 @@ build/
 docs/
 # Node
 node_modules/
+# Dune build directory (client-ocaml)
+client-ocaml/_build/

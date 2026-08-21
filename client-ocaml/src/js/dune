@@ -1,0 +1,4 @@
+(library
+ (name tea_client)
+ (modules promise_js lucid tea counter_app)
+ (libraries tea_pure js_of_ocaml))
