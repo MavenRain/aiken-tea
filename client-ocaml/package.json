@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
-    "test": "node test/js/run.mjs"
+    "test": "node test/js/run.mjs && node test/js/run.mjs _build/default/test/js/test_registry.bc.js"
   },
   "dependencies": {
     "@lucid-evolution/lucid": "^0.6.2"

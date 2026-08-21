@@ -83,9 +83,17 @@ the validator re-computes the same step on-chain, so a divergent mirror
 cannot confirm. `subscribe` polls the script address for the confirmed
 model (the Sub side).
 
+The registry app is mirrored too (`src/pure/registry.ml`,
+`src/js/registry_app.ml`): the client applies the `(owner, seed)`
+parameters to the blueprint, derives the policy id, performs the
+one-shot genesis mint, and decorates every dispatch with the owner's
+required signature. Its emulator suite covers the genesis path and the
+upgrade policy (signature, exact version bump, NFT preservation,
+well-formedness).
+
 ```sh
 cd client-ocaml
 dune test        # native Data codec suite
 pnpm install
-pnpm test        # js_of_ocaml bundle + Lucid emulator, no network needed
+pnpm test        # js_of_ocaml bundles + Lucid emulator, no network needed
 ```

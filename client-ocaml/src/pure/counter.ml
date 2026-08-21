@@ -26,7 +26,7 @@ let model_of_data text =
     (fun data ->
       match data with
       | Tea_data.Constr (0, [ Tea_data.Int count ]) -> Ok { count }
-      | Tea_data.Int _ | Tea_data.Constr (_, _) ->
+      | Tea_data.Int _ | Tea_data.Bytes _ | Tea_data.Constr (_, _) ->
         Error ("not a counter model: " ^ Tea_data.to_string data))
 
 let msg_index msg =

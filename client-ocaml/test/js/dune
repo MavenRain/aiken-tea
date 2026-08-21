@@ -1,5 +1,5 @@
-(executable
- (name test_counter)
- (modules test_counter)
+(executables
+ (names test_counter test_registry)
+ (modules harness test_counter test_registry)
  (modes js)
  (libraries tea_pure tea_client js_of_ocaml))

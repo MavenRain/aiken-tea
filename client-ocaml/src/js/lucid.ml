@@ -139,5 +139,105 @@ let sign_and_submit (tx : tx) : string Promise_js.t =
       Promise_js.map Js.to_string
         (Promise_js.of_any (Js.Unsafe.meth_call signed "submit" [||])))
 
+let utxo_assets (utxo : utxo) : Js.Unsafe.any =
+  Js.Unsafe.get utxo (Js.string "assets")
+
+(* An assets object ({unit: quantity}) from unit/amount pairs. *)
+let assets_of (entries : (string * lovelace) list) : Js.Unsafe.any =
+  Js.Unsafe.obj (Array.of_list entries)
+
+let utxo_asset (utxo : utxo) ~(unit : string) : lovelace =
+  let amount = Js.Unsafe.get (utxo_assets utxo) (Js.string unit) in
+  if nullish amount then bigint "0" else amount
+
+let lovelace_to_string (amount : lovelace) : string =
+  Js.to_string (Js.Unsafe.fun_call (global "String") [| amount |])
+
+let utxo_tx_hash (utxo : utxo) : string =
+  Js.to_string (Js.Unsafe.get utxo (Js.string "txHash"))
+
+let utxo_output_index (utxo : utxo) : int =
+  Js.Unsafe.get utxo (Js.string "outputIndex")
+
+let wallet (lucid : t) : Js.Unsafe.any =
+  Js.Unsafe.meth_call lucid "wallet" [||]
+
+let wallet_address (lucid : t) : string Promise_js.t =
+  Promise_js.map Js.to_string
+    (Promise_js.of_any (Js.Unsafe.meth_call (wallet lucid) "address" [||]))
+
+let wallet_utxos (lucid : t) : utxo list Promise_js.t =
+  Promise_js.map
+    (fun utxos -> Array.to_list (Js.to_array (Js.Unsafe.coerce utxos)))
+    (Promise_js.of_any (Js.Unsafe.meth_call (wallet lucid) "getUtxos" [||]))
+
+let payment_credential_hash (address : string) : string =
+  Js.to_string
+    (Js.Unsafe.get
+       (Js.Unsafe.fun_call
+          (lib_get "paymentCredentialOf")
+          [| Js.Unsafe.inject (Js.string address) |])
+       (Js.string "hash"))
+
+(* Data.from: CBOR hex to the library's Data representation, the form
+   applyParamsToScript consumes. *)
+let data_of_cbor_hex (hex : string) : Js.Unsafe.any =
+  Js.Unsafe.meth_call (lib_get "Data") "from"
+    [| Js.Unsafe.inject (Js.string hex) |]
+
+let apply_params_to_script ~(params : Js.Unsafe.any list)
+    (compiled_code : string) : string =
+  Js.to_string
+    (Js.Unsafe.fun_call
+       (lib_get "applyParamsToScript")
+       [| Js.Unsafe.inject (Js.string compiled_code);
+          Js.Unsafe.inject (Js.array (Array.of_list params))
+       |])
+
+let minting_policy_to_id (validator : validator) : string =
+  Js.to_string
+    (Js.Unsafe.fun_call
+       (lib_get "mintingPolicyToId")
+       [| Js.Unsafe.inject validator |])
+
+(* collectFrom without a redeemer: plain wallet inputs. *)
+let collect_from_wallet ~(utxos : utxo list) (builder : tx_builder) :
+    tx_builder =
+  Js.Unsafe.meth_call builder "collectFrom"
+    [| Js.Unsafe.inject (Js.array (Array.of_list utxos)) |]
+
+let mint_assets ~(assets : (string * lovelace) list) ~(redeemer : string)
+    (builder : tx_builder) : tx_builder =
+  Js.Unsafe.meth_call builder "mintAssets"
+    [| Js.Unsafe.inject (assets_of assets);
+       Js.Unsafe.inject (Js.string redeemer)
+    |]
+
+let attach_minting_policy ~(validator : validator) (builder : tx_builder) :
+    tx_builder =
+  Js.Unsafe.meth_call
+    (Js.Unsafe.get builder (Js.string "attach"))
+    "MintingPolicy"
+    [| Js.Unsafe.inject validator |]
+
+let add_signer ~(address : string) (builder : tx_builder) : tx_builder =
+  Js.Unsafe.meth_call builder "addSigner"
+    [| Js.Unsafe.inject (Js.string address) |]
+
+(* pay.ToContract with a full assets object instead of bare lovelace,
+   for outputs that must carry tokens along (the state NFT). *)
+let pay_to_contract_assets ~(address : string) ~(datum : string)
+    ~(assets : Js.Unsafe.any) (builder : tx_builder) : tx_builder =
+  Js.Unsafe.meth_call
+    (Js.Unsafe.get builder (Js.string "pay"))
+    "ToContract"
+    [| Js.Unsafe.inject (Js.string address);
+       Js.Unsafe.obj
+         [| ("kind", Js.Unsafe.inject (Js.string "inline"));
+            ("value", Js.Unsafe.inject (Js.string datum))
+         |];
+       Js.Unsafe.inject assets
+    |]
+
 let set_exit_code (code : int) : unit =
   Js.Unsafe.set (global "process") (Js.string "exitCode") code

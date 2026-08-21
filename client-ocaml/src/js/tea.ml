@@ -17,6 +17,10 @@ type ('model, 'msg) app = {
   model_to_data : 'model -> string;
   model_of_data : string -> ('model, string) result;
   msg_to_data : 'msg -> string;
+  (* Per-app decoration of every dispatch build: extra required
+     signers and similar policy inputs the generic runtime cannot
+     know. [Fun.id] when the app needs none. *)
+  finish : Lucid.tx_builder -> Lucid.tx_builder;
   validator : Lucid.validator;
 }
 
@@ -97,9 +101,10 @@ let dispatch handle msg =
                         ~redeemer:(handle.app.msg_to_data msg)
                    |> Lucid.attach_spending_validator
                         ~validator:handle.app.validator
-                   |> Lucid.pay_to_contract ~address:handle.address
+                   |> Lucid.pay_to_contract_assets ~address:handle.address
                         ~datum:(handle.app.model_to_data predicted)
-                        ~lovelace:(Lucid.utxo_lovelace utxo)
+                        ~assets:(Lucid.utxo_assets utxo)
+                   |> handle.app.finish
                    |> Lucid.complete)
                    Lucid.sign_and_submit))))
 

@@ -51,7 +51,38 @@ let checks =
     ("non-hex rejected", Result.is_error (Tea_data.decode "zz"));
     ("truncated rejected", Result.is_error (Tea_data.decode "d8799f00"));
     ("trailing bytes rejected", Result.is_error (Tea_data.decode "d8798000"));
-    ("byte string rejected", Result.is_error (Tea_data.decode "43abcdef"));
+    ("map rejected", Result.is_error (Tea_data.decode "a0"));
+    (* Byte strings (added with the registry app). *)
+    ("empty bytes encodes as 40", Tea_data.encode (Bytes "") = "40");
+    ("bytes round-trip", roundtrips (Bytes "abc"));
+    ("bytes 64-byte round-trip", roundtrips (Bytes (String.make 64 'x')));
+    ("chunked indefinite bytes decode",
+     Tea_data.decode "5f43616263426465ff" = Ok (Tea_data.Bytes "abcde"));
+    ("hex helper inverts", Tea_data.string_of_hex "6162" = Ok "ab");
+    (* Registry vectors pinned against @lucid-evolution Data.to. *)
+    ("registry model v0 encodes as Lucid Data.to",
+     Registry.model_to_data
+       { cid = "bafy-genesis"; version = 0; frontend_hash = String.make 32 '\017' }
+     = "d8799f4c626166792d67656e6573697300" ^ "5820" ^ String.make 64 '1' ^ "ff");
+    ("registry publish encodes as Lucid Data.to",
+     Registry.msg_to_data
+       (Registry.Publish
+          { cid = "bafy-upgrade"; frontend_hash = String.make 32 '\017' })
+     = "d8799f4c626166792d75706772616465" ^ "5820" ^ String.make 64 '1' ^ "ff");
+    ("registry model decode inverts encode",
+     Registry.model_of_data
+       (Registry.model_to_data
+          { cid = "c"; version = 3; frontend_hash = String.make 32 'h' })
+     = Ok { Registry.cid = "c"; version = 3; frontend_hash = String.make 32 'h' });
+    ("registry update bumps the version",
+     Registry.update
+       (Registry.Publish { cid = "b"; frontend_hash = "h" })
+       { cid = "a"; version = 4; frontend_hash = "g" }
+     = { Registry.cid = "b"; version = 5; frontend_hash = "h" });
+    ("registry well_formed rejects an empty cid",
+     not (Registry.well_formed "" (String.make 32 'h')));
+    ("registry well_formed rejects a short hash",
+     not (Registry.well_formed "cid" "short"));
     (* The step function, pinned. *)
     ("update Increment",
      Counter.update Counter.Increment { count = 4 } = { Counter.count = 5 });

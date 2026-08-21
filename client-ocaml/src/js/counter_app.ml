@@ -9,5 +9,6 @@ let app (compiled_code : string) : (Counter.model, Counter.msg) Tea.app =
     model_to_data = Counter.model_to_data;
     model_of_data = Counter.model_of_data;
     msg_to_data = Counter.msg_to_data;
+    finish = Fun.id;
     validator = Lucid.plutus_v3_validator compiled_code;
   }

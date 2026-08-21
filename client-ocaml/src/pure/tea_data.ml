@@ -7,6 +7,7 @@
 
 type t =
   | Int of int
+  | Bytes of string
   | Constr of int * t list
 
 type error =
@@ -24,9 +25,16 @@ let error_to_string error =
   | Overflow -> "integer too large for this host"
   | Trailing count -> Printf.sprintf "%d trailing bytes after value" count
 
+let hex_of_string bytes =
+  String.to_seq bytes
+  |> Seq.map (fun ch -> Printf.sprintf "%02x" (Char.code ch))
+  |> List.of_seq
+  |> String.concat ""
+
 let rec to_string value =
   match value with
   | Int n -> string_of_int n
+  | Bytes bytes -> Printf.sprintf "#\"%s\"" (hex_of_string bytes)
   | Constr (index, fields) ->
     Printf.sprintf "Constr(%d, [%s])" index
       (String.concat "; " (List.map to_string fields))
@@ -65,6 +73,9 @@ let fields_bytes encoded_fields =
 let rec to_bytes value =
   match value with
   | Int n -> if n >= 0 then header 0 n else header 1 (-1 - n)
+  | Bytes bytes ->
+    header 2 (String.length bytes)
+    @ (String.to_seq bytes |> Seq.map Char.code |> List.of_seq)
   | Constr (index, fields) ->
     let encoded = List.map to_bytes fields in
     if 0 <= index && index <= 6 then
@@ -105,6 +116,13 @@ let bytes_of_hex text =
            ~none:(Ok (List.rev rev_bytes))
            ~some:(fun _ -> Error (Bad_hex "odd length")))
 
+let string_of_byte_list bytes =
+  List.to_seq bytes |> Seq.map Char.chr |> String.of_seq
+
+(* Raw byte string from hex text, for callers holding hex (key hashes,
+   transaction ids) that need a [Bytes] payload. *)
+let string_of_hex text = Result.map string_of_byte_list (bytes_of_hex text)
+
 (* Read [count] bytes as a big-endian unsigned int, refusing values the
    host int cannot hold. *)
 let rec take_uint count acc bytes =
@@ -115,6 +133,14 @@ let rec take_uint count acc bytes =
     | byte :: rest ->
       if acc > max_int asr 8 then Error Overflow
       else take_uint (count - 1) ((acc lsl 8) lor byte) rest
+
+(* Take [count] raw bytes as a string. *)
+let rec take_bytes count acc bytes =
+  if count = 0 then Ok (string_of_byte_list (List.rev acc), bytes)
+  else
+    match bytes with
+    | [] -> Error Truncated
+    | byte :: rest -> take_bytes (count - 1) (byte :: acc) rest
 
 (* CBOR argument for a header byte: Ok (Some value, rest) for definite
    forms, Ok (None, rest) for the indefinite marker. *)
@@ -131,6 +157,25 @@ let argument info bytes =
   else if info = 31 then Ok (None, bytes)
   else Error (Unsupported (Printf.sprintf "additional info %d" info))
 
+(* An indefinite-length byte string: definite chunks up to the break
+   byte, concatenated (the ledger chunks byte strings over 64 bytes). *)
+let rec parse_chunks acc bytes =
+  match bytes with
+  | [] -> Error Truncated
+  | 0xff :: rest -> Ok (String.concat "" (List.rev acc), rest)
+  | byte :: rest ->
+    let major = byte lsr 5 in
+    let info = byte land 0x1f in
+    if major <> 2 then Error (Unsupported "byte-string chunk")
+    else
+      Result.bind (argument info rest) (fun (arg, rest) ->
+        arg
+        |> Option.fold
+             ~none:(Error (Unsupported "nested indefinite byte string"))
+             ~some:(fun count ->
+               Result.bind (take_bytes count [] rest) (fun (chunk, rest) ->
+                 parse_chunks (chunk :: acc) rest)))
+
 let rec parse bytes =
   match bytes with
   | [] -> Error Truncated
@@ -141,6 +186,12 @@ let rec parse bytes =
       match (major, arg) with
       | 0, Some value -> Ok (Int value, rest)
       | 1, Some value -> Ok (Int (-1 - value), rest)
+      | 2, Some count ->
+        Result.map (fun (chunk, rest) -> (Bytes chunk, rest))
+          (take_bytes count [] rest)
+      | 2, None ->
+        Result.map (fun (chunk, rest) -> (Bytes chunk, rest))
+          (parse_chunks [] rest)
       | 6, Some tag -> parse_tagged tag rest
       | 0, None | 1, None | 6, None ->
         Error (Unsupported "indefinite integer or tag")
@@ -167,7 +218,7 @@ and parse_tagged tag bytes =
             Result.map
               (fun (fields, rest) -> (Constr (index, fields), rest))
               (parse_array rest)
-          | Constr (_, _) -> Error (Unsupported "tag 102 index"))
+          | Bytes _ | Constr (_, _) -> Error (Unsupported "tag 102 index"))
   else Error (Unsupported (Printf.sprintf "tag %d" tag))
 
 (* An array of Data items: definite or indefinite length. *)
