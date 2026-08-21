@@ -45,7 +45,24 @@ aiken build
 1. This probe: generic transition check + counter, end to end. [DONE:
    on-chain half]
 2. Off-chain client: build/submit transitions (Lucid Evolution or
-   Mesh), browser-side optimistic `update` via WASM UPLC.
+   Mesh), browser-side optimistic `update` via WASM UPLC. [DONE: `client/`,
+   mirrored TS `update`; WASM UPLC deferred]
 3. IPFS deployment registry: CIP-68-style reference NFT holding
    `{cid, version, frontend_hash}` with a validator-enforced upgrade
    policy.
+
+## Client (step 2)
+
+`client/` is the off-chain half: a generic TEA runtime over
+[Lucid Evolution](https://github.com/Anastasia-Labs/lucid-evolution).
+`dispatch(msg)` computes the next model locally with the mirrored pure
+`update` (the optimistic update) and submits the transition transaction;
+the validator re-computes the same step on-chain, so a divergent mirror
+cannot confirm. `subscribe` polls the script address for the confirmed
+model (the Sub side).
+
+```sh
+cd client
+pnpm install
+pnpm test        # vitest + Lucid emulator, no network needed
+```
