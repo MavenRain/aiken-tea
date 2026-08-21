@@ -1,0 +1,18 @@
+name = "mavenrain/aiken-tea"
+version = "0.0.0"
+compiler = "v1.1.23"
+plutus = "v3"
+license = "Apache-2.0"
+description = "Aiken contracts for project 'mavenrain/aiken-tea'"
+
+[repository]
+user = "mavenrain"
+project = "aiken-tea"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.1.0"
+source = "github"
+
+[config]
