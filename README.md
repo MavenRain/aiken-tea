@@ -19,11 +19,22 @@ of the pure `update` function per transaction.
   datum, split state, vanished state, non-inline datum).
 - `validators/counter.ak` - the deployable validator, a one-line
   delegation to the library.
+- `lib/tea/registry.ak` - the IPFS deployment registry app (step 3):
+  `Model` = `{cid, version, frontend_hash}`, `Msg` = `Publish`. The
+  spend policy stacks an owner signature, payload shape checks and
+  reference-NFT preservation on the generic transition
+  (`tea.transition_with`); a one-shot `mint` creates the CIP-68-style
+  reference NFT at genesis.
+- `lib/tea/registry_test.ak` - transaction-level tests for the upgrade
+  policy and the genesis mint.
+- `validators/registry.ak` - one script, two purposes: the mint policy
+  id is the script's own hash, so the spend handler recovers it from
+  its own address with no extra parameter.
 
 ## Checks
 
 ```
-aiken check   # 12/12
+aiken check   # 30/30
 aiken build
 ```
 
@@ -39,6 +50,15 @@ aiken build
 - Exactly-one continuing output blocks double-satisfaction and state
   splitting. Lovelace is monotone non-decreasing so min-ada can grow
   with the datum.
+- The registry needs policy the generic check cannot know (who may
+  publish, the NFT staying put), so `tea.transition_with` takes a guard
+  over the state input and its continuing output. The guard runs on top
+  of the datum and lovelace checks, never instead of them.
+- Registry versions are exact by construction: the validator recomputes
+  `update`, and `update` bumps the version by one, so a version skip is
+  just a wrong datum. The reference NFT plus the one-shot seed UTxO
+  make the state UTxO unforgeable: only one such token can ever exist,
+  and every spend must carry it forward.
 
 ## Roadmap (from the feasibility sketch)
 
@@ -49,7 +69,8 @@ aiken build
    `client-ocaml/`, mirrored OCaml `update`; WASM UPLC deferred]
 3. IPFS deployment registry: CIP-68-style reference NFT holding
    `{cid, version, frontend_hash}` with a validator-enforced upgrade
-   policy.
+   policy. [DONE: on-chain half; client mirror + pinning tooling
+   deferred]
 
 ## Client (step 2)
 

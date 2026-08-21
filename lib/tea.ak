@@ -38,6 +38,19 @@ pub fn transition(
   own_ref: OutputReference,
   self: Transaction,
 ) -> Bool {
+  transition_with(expected, own_ref, self, fn(_own_input, _own_output) { True })
+}
+
+/// `transition` with an application-specific guard over the state input
+/// and its continuing output, for policies the generic check cannot know
+/// (a state token that must stay with the UTxO, for example). The guard
+/// runs on top of the datum and lovelace checks, never instead of them.
+pub fn transition_with(
+  expected: Data,
+  own_ref: OutputReference,
+  self: Transaction,
+  keeps: fn(Input, Output) -> Bool,
+) -> Bool {
   expect Some(own_input) = find_input(self.inputs, own_ref)
   let own_address = own_input.output.address
   expect [own_output] = list.filter(
@@ -50,5 +63,6 @@ pub fn transition(
     assets.lovelace_of(own_output.value) >= assets.lovelace_of(
       own_input.output.value,
     ),
+    keeps(own_input, own_output),
   }
 }
