@@ -4,21 +4,25 @@
    suite proves the mirror faithful, because the validator recomputes
    this step on-chain and rejects any divergence. Data layout matches
    the Aiken side: the model is Constr 0 [cid, version, frontend_hash],
-   the message is Constr 0 [cid, frontend_hash]. *)
+   the message is Constr 0 [cid, frontend_hash] for a publish and
+   Constr 1 [] for the retirement. *)
 
 type model = { cid : string; version : int; frontend_hash : string }
 
-type msg = Publish of { cid : string; frontend_hash : string }
+type msg = Publish of { cid : string; frontend_hash : string } | Retire
 
 (* CIP-67 label (100) prefix + "aiken-tea", as hex: the name of the
    reference NFT marking the state UTxO. *)
 let reference_token_name_hex = "000643b061696b656e2d746561"
 
-(* The pure TEA step function, mirroring `registry.update` in Aiken. *)
+(* The pure TEA step function, mirroring `registry.update` in Aiken:
+   a publish steps to the next model, the retirement ends the
+   application, so there is no next model. *)
 let update msg model =
   match msg with
   | Publish { cid; frontend_hash } ->
-    { cid; version = model.version + 1; frontend_hash }
+    Some { cid; version = model.version + 1; frontend_hash }
+  | Retire -> None
 
 (* Mirrors `registry.well_formed`: non-empty cid, 32-byte hash. *)
 let well_formed cid frontend_hash =
@@ -47,7 +51,10 @@ let msg_to_data msg =
   match msg with
   | Publish { cid; frontend_hash } ->
     Tea_data.encode (Constr (0, [ Bytes cid; Bytes frontend_hash ]))
+  | Retire -> Tea_data.encode (Constr (1, []))
 
 let msg_to_string msg =
   match msg with
   | Publish { cid; _ } -> "Publish " ^ cid
+  | Retire -> "Retire"
+

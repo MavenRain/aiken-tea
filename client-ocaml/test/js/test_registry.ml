@@ -18,6 +18,19 @@ let upgrade : Registry.msg =
   Registry.Publish
     { cid = "bafy-upgrade"; frontend_hash = String.make 32 '\034' }
 
+(* Oracle for publish steps. A publish always yields a next model; the
+   [None] poison makes an accidental terminal verdict fail the equality
+   checks loudly instead of masking it. *)
+let next_of msg model =
+  Registry.update msg model
+  |> Option.fold
+       ~none:
+         { Registry.cid = "<update returned None>";
+           version = -1;
+           frontend_hash = ""
+         }
+       ~some:Fun.id
+
 type ctx = {
   emulator : Lucid.emulator;
   lucid : Lucid.t;
@@ -168,7 +181,7 @@ let tests compiled =
     ( "confirms each published upgrade on-chain",
       fun () ->
         Promise_js.bind_ok (setup compiled) (fun ctx ->
-          let first = Registry.update upgrade genesis_model in
+          let first = next_of upgrade genesis_model in
           let second_msg =
             Registry.Publish
               { cid = "bafy-final"; frontend_hash = String.make 32 '3' }
@@ -177,15 +190,15 @@ let tests compiled =
             Promise_js.bind_ok (expect_confirmed ctx first) (fun () ->
               Promise_js.bind_ok
                 (step_expect ctx second_msg
-                   (Registry.update second_msg first))
+                   (next_of second_msg first))
                 (fun () ->
-                  expect_confirmed ctx (Registry.update second_msg first))))) );
+                  expect_confirmed ctx (next_of second_msg first))))) );
     ( "rejects an unsigned publish",
       fun () ->
         Promise_js.bind_ok (setup compiled) (fun ctx ->
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             let next =
-              Registry.model_to_data (Registry.update upgrade genesis_model)
+              Registry.model_to_data (next_of upgrade genesis_model)
             in
             Harness.expect_reject ~probe:"script"
               (hand_built ctx utxo upgrade ~signed:false
@@ -196,7 +209,7 @@ let tests compiled =
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             let forged =
               Registry.model_to_data
-                { (Registry.update upgrade genesis_model) with version = 2 }
+                { (next_of upgrade genesis_model) with version = 2 }
             in
             Harness.expect_reject
               (hand_built ctx utxo upgrade ~signed:true
@@ -206,7 +219,7 @@ let tests compiled =
         Promise_js.bind_ok (setup compiled) (fun ctx ->
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             let next =
-              Registry.model_to_data (Registry.update upgrade genesis_model)
+              Registry.model_to_data (next_of upgrade genesis_model)
             in
             Harness.expect_reject
               (hand_built ctx utxo upgrade ~signed:true
@@ -223,7 +236,7 @@ let tests compiled =
                 { cid = ""; frontend_hash = String.make 32 '\017' }
             in
             let next =
-              Registry.model_to_data (Registry.update empty genesis_model)
+              Registry.model_to_data (next_of empty genesis_model)
             in
             Harness.expect_reject
               (hand_built ctx utxo empty ~signed:true
@@ -271,6 +284,58 @@ let tests compiled =
                           ~error:(fun message ->
                             Promise_js.return (Error message))
                           ~ok:(fun () -> expect_confirmed ctx expected)))) );
+    ( "retires the registry: burns the NFT and ends the state",
+      fun () ->
+        Promise_js.bind_ok (setup compiled) (fun ctx ->
+          Promise_js.bind_ok (Registry_app.retire ctx.handle)
+            (fun (_ : string) ->
+              Lucid.await_block ctx.emulator 1;
+              Promise_js.bind (Tea.state_utxo ctx.handle) (fun gone ->
+                Result.is_error gone
+                |> Harness.check "state UTxO gone after the retire"
+                |> Result.fold
+                     ~error:(fun message -> Promise_js.return (Error message))
+                     ~ok:(fun () ->
+                       Promise_js.bind (Lucid.wallet_utxos ctx.lucid)
+                         (fun utxos ->
+                           let held =
+                             List.exists
+                               (fun utxo ->
+                                 Lucid.lovelace_to_string
+                                   (Lucid.utxo_asset utxo ~unit:(unit_of ctx))
+                                 <> "0")
+                               utxos
+                           in
+                           Promise_js.return
+                             (Harness.check "reference NFT burned" (not held))))))) );
+    ( "rejects an unsigned retire",
+      fun () ->
+        Promise_js.bind_ok (setup compiled) (fun ctx ->
+          Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
+            Harness.expect_reject ~probe:"script"
+              (hand_built ctx utxo Registry.Retire ~signed:false []
+              |> Lucid.mint_assets
+                   ~assets:[ (unit_of ctx, Lucid.bigint "-1") ]
+                   ~redeemer:Registry_app.void_redeemer))) );
+    ( "rejects a retire that keeps a state output",
+      fun () ->
+        Promise_js.bind_ok (setup compiled) (fun ctx ->
+          Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
+            Harness.expect_reject
+              (hand_built ctx utxo Registry.Retire ~signed:true
+                 [ ( Registry.model_to_data genesis_model,
+                     Lucid.assets_of
+                       [ ("lovelace", Lucid.bigint state_lovelace) ] )
+                 ]
+              |> Lucid.mint_assets
+                   ~assets:[ (unit_of ctx, Lucid.bigint "-1") ]
+                   ~redeemer:Registry_app.void_redeemer))) );
+    ( "rejects a retire that pockets the NFT instead of burning",
+      fun () ->
+        Promise_js.bind_ok (setup compiled) (fun ctx ->
+          Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
+            Harness.expect_reject
+              (hand_built ctx utxo Registry.Retire ~signed:true []))) );
     ( "pins on the daemon with an equal cid (needs IPFS_API)",
       fun () ->
         (ipfs_api ()

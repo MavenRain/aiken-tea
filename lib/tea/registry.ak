@@ -28,14 +28,17 @@ pub type Model {
 
 pub type Msg {
   Publish { cid: ByteArray, frontend_hash: ByteArray }
+  Retire
 }
 
 /// The pure TEA step function: a publish replaces the deployment and
-/// bumps the version by exactly one.
-pub fn update(msg: Msg, model: Model) -> Model {
+/// bumps the version by exactly one; a retire ends the application, so
+/// there is no next model.
+pub fn update(msg: Msg, model: Model) -> Option<Model> {
   when msg is {
     Publish { cid, frontend_hash } ->
-      Model { cid, version: model.version + 1, frontend_hash }
+      Some(Model { cid, version: model.version + 1, frontend_hash })
+    Retire -> None
   }
 }
 
@@ -48,9 +51,12 @@ pub fn well_formed(cid: ByteArray, frontend_hash: ByteArray) -> Bool {
   }
 }
 
-/// Upgrade policy: the transaction is signed by the registry owner, the
-/// payload is well formed, and the generic TEA transition holds with the
-/// reference NFT staying on the state UTxO.
+/// Upgrade or retirement, decided by recomputing `update`. Either way
+/// the transaction must be signed by the registry owner. A `Some` step
+/// is a publish: the payload must be well formed and the generic TEA
+/// transition must hold with the reference NFT staying on the state
+/// UTxO. A `None` step is the retirement: the generic halt must hold
+/// (no continuing state output) and the reference NFT must be burned.
 pub fn registry_spend(
   owner: VerificationKeyHash,
   datum: Option<Model>,
@@ -59,12 +65,24 @@ pub fn registry_spend(
   self: Transaction,
 ) -> Bool {
   expect Some(model) = datum
-  let Publish { cid, frontend_hash } = redeemer
-  let next: Data = update(redeemer, model)
   and {
     list.has(self.extra_signatories, owner),
-    well_formed(cid, frontend_hash),
-    tea.transition_with(next, own_ref, self, keeps_reference_token),
+    when update(redeemer, model) is {
+      Some(next) -> {
+        expect Publish { cid, frontend_hash } = redeemer
+        let next_data: Data = next
+        and {
+          well_formed(cid, frontend_hash),
+          tea.transition_with(next_data, own_ref, self, keeps_reference_token),
+        }
+      }
+      None ->
+        tea.halt(
+          own_ref,
+          self,
+          fn(own_input) { burns_reference_token(own_input, self) },
+        )
+    },
   }
 }
 
@@ -75,10 +93,21 @@ fn keeps_reference_token(own_input: Input, own_output: Output) -> Bool {
   assets.quantity_of(own_output.value, own_hash, reference_token_name) == 1
 }
 
-/// Genesis: a one-shot mint of the reference NFT. The transaction must
-/// consume the `seed` UTxO (so the mint can never repeat), mint exactly
-/// one token named `reference_token_name` under this policy, and lock it
-/// at the registry script with a well-formed version-0 inline datum.
+/// The retirement burn: the transaction must burn exactly the one
+/// reference NFT minted under the registry's own script hash.
+fn burns_reference_token(own_input: Input, self: Transaction) -> Bool {
+  expect Script(own_hash) = own_input.output.address.payment_credential
+  assets.quantity_of(self.mint, own_hash, reference_token_name) == -1
+}
+
+/// Genesis or retirement, decided by the minted quantity. Genesis is a
+/// one-shot mint of the reference NFT: the transaction must consume the
+/// `seed` UTxO (so the mint can never repeat), mint exactly one token
+/// named `reference_token_name` under this policy, and lock it at the
+/// registry script with a well-formed version-0 inline datum. The
+/// retirement burn only checks the token name: the token lives on the
+/// state UTxO, so a burn always spends that UTxO, and the spend handler
+/// carries the retirement policy.
 pub fn registry_mint(
   seed: OutputReference,
   policy_id: PolicyId,
@@ -89,29 +118,37 @@ pub fn registry_mint(
     policy_id,
   )
     |> dict.to_pairs
-  expect [genesis] = list.filter(
-    self.outputs,
-    fn(out) { out.address.payment_credential == Script(policy_id) },
-  )
-  expect InlineDatum(genesis_data) = genesis.datum
-  expect genesis_model: Model = genesis_data
-  and {
-    list.any(self.inputs, fn(input) { input.output_reference == seed }),
-    minted_name == reference_token_name,
-    minted_quantity == 1,
-    assets.quantity_of(genesis.value, policy_id, reference_token_name) == 1,
-    genesis_model.version == 0,
-    well_formed(genesis_model.cid, genesis_model.frontend_hash),
+  when minted_quantity is {
+    -1 -> minted_name == reference_token_name
+    _ -> {
+      expect [genesis] = list.filter(
+        self.outputs,
+        fn(out) { out.address.payment_credential == Script(policy_id) },
+      )
+      expect InlineDatum(genesis_data) = genesis.datum
+      expect genesis_model: Model = genesis_data
+      and {
+        list.any(self.inputs, fn(input) { input.output_reference == seed }),
+        minted_name == reference_token_name,
+        minted_quantity == 1,
+        assets.quantity_of(genesis.value, policy_id, reference_token_name) == 1,
+        genesis_model.version == 0,
+        well_formed(genesis_model.cid, genesis_model.frontend_hash),
+      }
+    }
   }
 }
 
 test update_publish_bumps_version() {
   let model = Model { cid: "bafy-v1", version: 4, frontend_hash: "old-hash" }
-  update(Publish { cid: "bafy-v2", frontend_hash: "new-hash" }, model) == Model {
-    cid: "bafy-v2",
-    version: 5,
-    frontend_hash: "new-hash",
-  }
+  update(Publish { cid: "bafy-v2", frontend_hash: "new-hash" }, model) == Some(
+    Model { cid: "bafy-v2", version: 5, frontend_hash: "new-hash" },
+  )
+}
+
+test update_retire_ends_the_application() {
+  let model = Model { cid: "bafy-v1", version: 4, frontend_hash: "old-hash" }
+  update(Retire, model) == None
 }
 
 test well_formed_accepts_32_byte_hash() {

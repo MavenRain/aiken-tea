@@ -113,7 +113,7 @@ let tests app =
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             let next =
               (app_of ctx).Tea.model_to_data
-                ((app_of ctx).Tea.update Counter.Increment { Counter.count = 0 })
+                (Counter.update Counter.Increment { Counter.count = 0 })
             in
             Harness.expect_reject
               (hand_built ctx utxo Counter.Increment
@@ -126,7 +126,7 @@ let tests app =
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             let next =
               (app_of ctx).Tea.model_to_data
-                ((app_of ctx).Tea.update Counter.Increment { Counter.count = 0 })
+                (Counter.update Counter.Increment { Counter.count = 0 })
             in
             Harness.expect_reject
               (hand_built ctx utxo Counter.Increment

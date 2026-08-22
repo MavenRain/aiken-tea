@@ -11,7 +11,9 @@ of the pure `update` function per transaction.
   application's `update` (as a `Data`-returning `step`) and it enforces
   that the spending transaction recreates exactly one state UTxO at the
   script address, with inline datum `update(msg, model)` and no
-  lovelace removed.
+  lovelace removed. `tea.halt` is the terminal check: when `update`
+  returns `None`, the transaction must consume the state UTxO and leave
+  no output at the script address.
 - `lib/tea/counter.ak` - the smallest application: `Model` = a count,
   `Msg` = `Increment | Decrement | Reset`.
 - `lib/tea/counter_test.ak` - transaction-level tests: 3 accepted
@@ -20,13 +22,15 @@ of the pure `update` function per transaction.
 - `validators/counter.ak` - the deployable validator, a one-line
   delegation to the library.
 - `lib/tea/registry.ak` - the IPFS deployment registry app (step 3):
-  `Model` = `{cid, version, frontend_hash}`, `Msg` = `Publish`. The
-  spend policy stacks an owner signature, payload shape checks and
-  reference-NFT preservation on the generic transition
+  `Model` = `{cid, version, frontend_hash}`, `Msg` = `Publish |
+  Retire`. The spend policy stacks an owner signature, payload shape
+  checks and reference-NFT preservation on the generic transition
   (`tea.transition_with`); a one-shot `mint` creates the CIP-68-style
-  reference NFT at genesis.
+  reference NFT at genesis. `Retire` is the terminal message (step 5):
+  `update` returns `None`, so the spend requires the generic halt plus
+  a burn of the reference NFT, and the mint handler accepts that burn.
 - `lib/tea/registry_test.ak` - transaction-level tests for the upgrade
-  policy and the genesis mint.
+  policy, the genesis mint and the retirement path.
 - `validators/registry.ak` - one script, two purposes: the mint policy
   id is the script's own hash, so the spend handler recovers it from
   its own address with no extra parameter.
@@ -34,7 +38,7 @@ of the pure `update` function per transaction.
 ## Checks
 
 ```
-aiken check   # 30/30
+aiken check   # 39/39
 aiken build
 ```
 
@@ -59,6 +63,11 @@ aiken build
   just a wrong datum. The reference NFT plus the one-shot seed UTxO
   make the state UTxO unforgeable: only one such token can ever exist,
   and every spend must carry it forward.
+- Termination is part of the step function, not a side channel: the
+  registry's `update` returns `Option<Model>`, and the validator
+  branches on the recomputed verdict. `Some` demands the transition,
+  `None` demands the halt plus the NFT burn. The seed UTxO is gone
+  after genesis, so a retired registry can never be reminted.
 
 ## Roadmap (from the feasibility sketch)
 
@@ -74,6 +83,9 @@ aiken build
    pure OCaml, publish a real bundle end to end, and pin it on a kubo
    daemon under a differential CID check. [DONE for one raw block
    (up to 256 KiB); chunked dag-pb trees deferred]
+5. Registry retirement: a terminal `Retire` message ends the state
+   UTxO and burns the reference NFT under the same owner policy.
+   [DONE: on-chain half + client mirror]
 
 ## Client (step 2)
 
@@ -89,10 +101,14 @@ model (the Sub side).
 The registry app is mirrored too (`src/pure/registry.ml`,
 `src/js/registry_app.ml`): the client applies the `(owner, seed)`
 parameters to the blueprint, derives the policy id, performs the
-one-shot genesis mint, and decorates every dispatch with the owner's
-required signature. Its emulator suite covers the genesis path and the
-upgrade policy (signature, exact version bump, NFT preservation,
-well-formedness).
+one-shot genesis mint, and decorates every build with the owner's
+required signature. `Registry_app.retire`, over the generic `Tea.halt`,
+ends the app: the mirrored `update` returns `None` for `Retire`, which
+licenses a transaction that recreates nothing and burns the reference
+NFT. Its emulator suite covers the genesis path, the upgrade policy
+(signature, exact version bump, NFT preservation, well-formedness) and
+the retirement (accepted burn; rejected unsigned, state-keeping and
+burn-less variants).
 
 The pinning pipeline (step 4) closes the loop from bundle bytes to an
 on-chain publish. The pure half (`src/pure/hashes.ml`, `cid.ml`,

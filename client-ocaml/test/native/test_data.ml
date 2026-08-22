@@ -80,7 +80,13 @@ let checks =
      Registry.update
        (Registry.Publish { cid = "b"; frontend_hash = "h" })
        { cid = "a"; version = 4; frontend_hash = "g" }
-     = { Registry.cid = "b"; version = 5; frontend_hash = "h" });
+     = Some { Registry.cid = "b"; version = 5; frontend_hash = "h" });
+    ("registry retire encodes as Lucid Data.to",
+     Registry.msg_to_data Registry.Retire = "d87a80");
+    ("registry update retire ends the application",
+     Registry.update Registry.Retire
+       { Registry.cid = "a"; version = 4; frontend_hash = "g" }
+     = None);
     ("registry well_formed rejects an empty cid",
      not (Registry.well_formed "" (String.make 32 'h')));
     ("registry well_formed rejects a short hash",

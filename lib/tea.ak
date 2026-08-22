@@ -66,3 +66,21 @@ pub fn transition_with(
     keeps(own_input, own_output),
   }
 }
+
+/// Terminal TEA step: `update` returned `None`, so the application ends.
+/// The spending transaction must leave no output at the script's own
+/// address. `releases` is the application guard over the state input,
+/// for teardown policy the generic check cannot know (a state-token
+/// burn, for example).
+pub fn halt(
+  own_ref: OutputReference,
+  self: Transaction,
+  releases: fn(Input) -> Bool,
+) -> Bool {
+  expect Some(own_input) = find_input(self.inputs, own_ref)
+  let own_address = own_input.output.address
+  and {
+    !list.any(self.outputs, fn(out) { out.address == own_address }),
+    releases(own_input),
+  }
+}

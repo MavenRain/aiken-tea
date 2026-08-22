@@ -50,11 +50,29 @@ let app ~(compiled_code : string) ~(owner_hash : string)
           model_to_data = Registry.model_to_data;
           model_of_data = Registry.model_of_data;
           msg_to_data = Registry.msg_to_data;
-          finish = Lucid.add_signer ~address:owner_address;
+          (* Every build carries the owner's signature; the terminal
+             retire also burns the reference NFT under the script's own
+             policy (the spend attachment already witnesses the mint:
+             both halves are one script). *)
+          finish =
+            (fun msg builder ->
+              let signed = Lucid.add_signer ~address:owner_address builder in
+              match msg with
+              | Registry.Publish _ -> signed
+              | Registry.Retire ->
+                Lucid.mint_assets
+                  ~assets:[ (reference_unit ~policy_id, Lucid.bigint "-1") ]
+                  ~redeemer:void_redeemer signed);
           validator
         },
         policy_id ))
     (applied_validator ~compiled_code ~owner_hash ~seed_tx_hash ~seed_index)
+
+(* Retire the registry: burn the reference NFT and end the state
+   UTxO. Resolves to the transaction hash. *)
+let retire (handle : (Registry.model, Registry.msg) Tea.handle) :
+    (string, string) result Promise_js.t =
+  Tea.halt handle Registry.Retire
 
 (* One-shot genesis: consume the seed UTxO, mint the reference NFT
    under the registry's own policy, and lock it at the script address

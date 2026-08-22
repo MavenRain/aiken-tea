@@ -8,7 +8,7 @@ use cardano/transaction.{
   InlineDatum, Input, NoDatum, Output, OutputReference, Transaction, placeholder,
 }
 use tea/registry.{
-  Model, Publish, reference_token_name, registry_mint, registry_spend,
+  Model, Publish, Retire, reference_token_name, registry_mint, registry_spend,
 }
 
 const script_hash = #"00000000000000000000000000000000000000000000000000000000"
@@ -246,5 +246,96 @@ test genesis_token_elsewhere_rejected() {
     seed_ref,
     script_hash,
     mint_tx([seed_input()], [bare_state, strayed], 1),
+  )
+}
+
+fn retire_tx(
+  outputs: List<Output>,
+  signers: List<ByteArray>,
+  quantity: Int,
+) -> Transaction {
+  Transaction {
+    ..placeholder,
+    inputs: [state_input()],
+    outputs,
+    extra_signatories: signers,
+    mint: from_asset(script_hash, reference_token_name, quantity),
+  }
+}
+
+test retire_accepted() {
+  registry_spend(
+    owner,
+    Some(model_v1()),
+    Retire,
+    own_ref,
+    retire_tx([], [owner], -1),
+  )
+}
+
+test retire_unsigned_rejected() {
+  !registry_spend(
+    owner,
+    Some(model_v1()),
+    Retire,
+    own_ref,
+    retire_tx([], [], -1),
+  )
+}
+
+test retire_stranger_rejected() {
+  !registry_spend(
+    owner,
+    Some(model_v1()),
+    Retire,
+    own_ref,
+    retire_tx([], [stranger], -1),
+  )
+}
+
+test retire_keeping_state_rejected() {
+  !registry_spend(
+    owner,
+    Some(model_v1()),
+    Retire,
+    own_ref,
+    retire_tx([state_output(model_v1(), False)], [owner], -1),
+  )
+}
+
+test retire_without_burn_rejected() {
+  !registry_spend(
+    owner,
+    Some(model_v1()),
+    Retire,
+    own_ref,
+    spend_tx([], [owner]),
+  )
+}
+
+test retire_double_burn_rejected() {
+  !registry_spend(
+    owner,
+    Some(model_v1()),
+    Retire,
+    own_ref,
+    retire_tx([], [owner], -2),
+  )
+}
+
+test burn_mint_accepted() {
+  registry_mint(seed_ref, script_hash, mint_tx([state_input()], [], -1))
+}
+
+test burn_wrong_name_rejected() {
+  !registry_mint(
+    seed_ref,
+    script_hash,
+    Transaction {
+      ..placeholder,
+      inputs: [state_input()],
+      outputs: [],
+      mint: from_asset(script_hash, "stray-token", -1),
+    },
   )
 }
