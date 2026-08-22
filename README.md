@@ -193,9 +193,22 @@ takes an entry back to its author. Terminal messages are refused
 inside a batch, both by the mirror and on-chain: a halt travels alone
 through the single-message path.
 
-Known probe limit: the counter has no genesis NFT, so `Process` can
-be satisfied by a look-alike UTxO staged at the state address. An
-attacker can capture entries' min-ada that way without touching the
-real state (which stays intact). An app that marks its state with a
-reference NFT (the registry pattern) closes this in its `keeps`
-guard.
+## Genesis NFT (step 9)
+
+Step 8 shipped with a documented limit: the counter had no genesis
+NFT, so `Process` could be satisfied by a look-alike UTxO staged at
+the state address, and an attacker could capture entries' min-ada
+that way without touching the real state. Step 9 closes it, and turns
+the fix into framework vocabulary. `tea.genesis` is TEA's `init` as a
+one-shot mint policy: consume a seed UTxO (so the mint can never
+repeat), mint exactly one reference token under the script's own
+policy, and lock it at the script with an inline datum the app's
+`init_ok` accepts. Both apps now delegate to it (the registry keeps
+its retirement burn arm; the counter demands the zero model), and
+both pin the token to the state on every transition through
+`tea.spend_with` / `tea.batch_with`. The queue's `Process` check
+demands a state input that carries a token under the state's own
+policy, not just one at the state address: only the state script's
+mint handler can create such a token, so a look-alike never
+qualifies. A batch-capable app must mark its state this way, or no
+entry of its queue can ever be processed.

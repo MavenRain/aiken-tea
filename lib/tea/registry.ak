@@ -11,9 +11,7 @@ use aiken/crypto.{VerificationKeyHash}
 use aiken/primitive/bytearray
 use cardano/address.{Script}
 use cardano/assets.{PolicyId}
-use cardano/transaction.{
-  InlineDatum, Input, Output, OutputReference, Transaction,
-}
+use cardano/transaction.{Input, Output, OutputReference, Transaction}
 use tea
 
 /// CIP-67 label (100) prefix, then "aiken-tea": the reference-token name
@@ -100,11 +98,10 @@ fn burns_reference_token(own_input: Input, self: Transaction) -> Bool {
   assets.quantity_of(self.mint, own_hash, reference_token_name) == -1
 }
 
-/// Genesis or retirement, decided by the minted quantity. Genesis is a
-/// one-shot mint of the reference NFT: the transaction must consume the
-/// `seed` UTxO (so the mint can never repeat), mint exactly one token
-/// named `reference_token_name` under this policy, and lock it at the
-/// registry script with a well-formed version-0 inline datum. The
+/// Genesis or retirement, decided by the minted quantity. Genesis is
+/// the generic one-shot `tea.genesis` (seed consumed, one token named
+/// `reference_token_name`, locked at the registry script) with the
+/// registry's datum policy: a well-formed version-0 model. The
 /// retirement burn only checks the token name: the token lives on the
 /// state UTxO, so a burn always spends that UTxO, and the spend handler
 /// carries the retirement policy.
@@ -120,22 +117,16 @@ pub fn registry_mint(
     |> dict.to_pairs
   when minted_quantity is {
     -1 -> minted_name == reference_token_name
-    _ -> {
-      expect [genesis] = list.filter(
-        self.outputs,
-        fn(out) { out.address.payment_credential == Script(policy_id) },
-      )
-      expect InlineDatum(genesis_data) = genesis.datum
-      expect genesis_model: Model = genesis_data
-      and {
-        list.any(self.inputs, fn(input) { input.output_reference == seed }),
-        minted_name == reference_token_name,
-        minted_quantity == 1,
-        assets.quantity_of(genesis.value, policy_id, reference_token_name) == 1,
-        genesis_model.version == 0,
-        well_formed(genesis_model.cid, genesis_model.frontend_hash),
-      }
-    }
+    _ -> tea.genesis(seed, policy_id, reference_token_name, version_zero, self)
+  }
+}
+
+/// The genesis datum policy: a well-formed version-0 model.
+fn version_zero(state_data: Data) -> Bool {
+  expect model: Model = state_data
+  and {
+    model.version == 0,
+    well_formed(model.cid, model.frontend_hash),
   }
 }
 

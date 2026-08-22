@@ -6,11 +6,12 @@
 //// `update` is the pure TEA step function, `Msg` is the redeemer and
 //// `Model` is the inline datum.
 
+use aiken/collection/dict
 use aiken/collection/list
 use aiken/crypto.{ScriptHash, VerificationKeyHash}
 use aiken/option
 use cardano/address.{Script}
-use cardano/assets
+use cardano/assets.{PolicyId}
 use cardano/transaction.{
   InlineDatum, Input, Output, OutputReference, Transaction, find_input,
 }
@@ -48,8 +49,29 @@ pub fn spend(
   own_ref: OutputReference,
   self: Transaction,
 ) -> Bool {
+  spend_with(
+    step,
+    datum,
+    redeemer,
+    own_ref,
+    self,
+    fn(_own_input, _own_output) { True },
+  )
+}
+
+/// `spend` with an application guard over the state input and its
+/// continuing output (see `transition_with`): the shape for an app whose
+/// state UTxO carries a marker token that must stay with it.
+pub fn spend_with(
+  step: fn(msg, model) -> Data,
+  datum: Option<model>,
+  redeemer: msg,
+  own_ref: OutputReference,
+  self: Transaction,
+  keeps: fn(Input, Output) -> Bool,
+) -> Bool {
   expect Some(model) = datum
-  transition(step(redeemer, model), own_ref, self)
+  transition_with(step(redeemer, model), own_ref, self, keeps)
 }
 
 /// The messages carried by the transaction's queue inputs, in ledger
@@ -94,6 +116,31 @@ pub fn batch(
   own_ref: OutputReference,
   self: Transaction,
 ) -> Bool {
+  batch_with(
+    step,
+    decode,
+    to_data,
+    datum,
+    queue,
+    own_ref,
+    self,
+    fn(_own_input, _own_output) { True },
+  )
+}
+
+/// `batch` with an application guard over the state input and its
+/// continuing output (see `transition_with`): the batched counterpart
+/// of `spend_with`.
+pub fn batch_with(
+  step: fn(msg, model) -> Option<model>,
+  decode: fn(Data) -> msg,
+  to_data: fn(model) -> Data,
+  datum: Option<model>,
+  queue: ScriptHash,
+  own_ref: OutputReference,
+  self: Transaction,
+  keeps: fn(Input, Output) -> Bool,
+) -> Bool {
   expect Some(model) = datum
   let msgs = queued_msgs(queue, self, decode)
   expect [_, ..] = msgs
@@ -102,7 +149,7 @@ pub fn batch(
     Some(model),
     fn(msg, acc) { option.and_then(acc, fn(current) { step(msg, current) }) },
   )
-  transition(to_data(final), own_ref, self)
+  transition_with(to_data(final), own_ref, self, keeps)
 }
 
 /// Core check, over an already-computed expected datum. Enforces:
@@ -158,5 +205,40 @@ pub fn halt(
   and {
     !list.any(self.outputs, fn(out) { out.address == own_address }),
     releases(own_input),
+  }
+}
+
+/// One-shot genesis: TEA's `init` as a mint policy. The transaction
+/// must consume `seed` (so the mint can never repeat), mint exactly one
+/// `token_name` under `policy_id`, and lock the token at the script
+/// whose hash is `policy_id`, on a single output whose inline datum
+/// `init_ok` accepts. The token is what later tells the genuine state
+/// UTxO from a look-alike someone pays to the same address (see
+/// `tea/queue`): only this mint can create it, and a `keeps` guard on
+/// the spend side (`spend_with`, `batch_with`) pins it to the state
+/// forever after.
+pub fn genesis(
+  seed: OutputReference,
+  policy_id: PolicyId,
+  token_name: ByteArray,
+  init_ok: fn(Data) -> Bool,
+  self: Transaction,
+) -> Bool {
+  expect [Pair(minted_name, minted_quantity)] = assets.tokens(
+    self.mint,
+    policy_id,
+  )
+    |> dict.to_pairs
+  expect [state] = list.filter(
+    self.outputs,
+    fn(out) { out.address.payment_credential == Script(policy_id) },
+  )
+  expect InlineDatum(state_data) = state.datum
+  and {
+    list.any(self.inputs, fn(input) { input.output_reference == seed }),
+    minted_name == token_name,
+    minted_quantity == 1,
+    assets.quantity_of(state.value, policy_id, token_name) == 1,
+    init_ok(state_data),
   }
 }

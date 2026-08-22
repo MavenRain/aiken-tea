@@ -1,15 +1,19 @@
 //// Transaction-level tests for the counter app driven through the generic
-//// `tea.transition` check (via `counter_spend`).
+//// `tea.transition_with` check (via `counter_spend` / `counter_batch`)
+//// and the one-shot genesis mint (`counter_mint`).
 
-use cardano/address.{from_script}
-use cardano/assets.{from_lovelace}
+use cardano/address.{from_script, from_verification_key}
+use cardano/assets.{add, from_asset, from_lovelace}
 use cardano/transaction.{
   InlineDatum, Input, NoDatum, Output, OutputReference, Transaction, placeholder,
 }
 use tea.{Queued}
 use tea/counter.{
-  Decrement, Increment, Model, Msg, Reset, counter_batch, counter_spend, update,
+  Decrement, Increment, Model, Msg, Reset, counter_batch, counter_mint,
+  counter_spend, reference_token_name, update,
 }
+
+const script_hash = #"00000000000000000000000000000000000000000000000000000000"
 
 const own_ref =
   OutputReference {
@@ -18,10 +22,24 @@ const own_ref =
   }
 
 fn script_address() {
-  from_script(#"00000000000000000000000000000000000000000000000000000000")
+  from_script(script_hash)
 }
 
+/// A state output carrying the reference NFT, the shape every honest
+/// transition recreates.
 fn state_output(count: Int, lovelace: Int) -> Output {
+  let model_data: Data = Model { count }
+  Output {
+    address: script_address(),
+    value: from_lovelace(lovelace)
+      |> add(script_hash, reference_token_name, 1),
+    datum: InlineDatum(model_data),
+    reference_script: None,
+  }
+}
+
+/// A state-shaped output without the reference NFT.
+fn bare_output(count: Int, lovelace: Int) -> Output {
   let model_data: Data = Model { count }
   Output {
     address: script_address(),
@@ -81,6 +99,17 @@ test lovelace_drain_rejected() {
     Increment,
     own_ref,
     spend_tx([state_output(42, 1_500_000)]),
+  )
+}
+
+test token_dropped_rejected() {
+  // The continuing output must keep the reference NFT: a transition
+  // that strips it could seed a look-alike state elsewhere.
+  !counter_spend(
+    Some(Model { count: 41 }),
+    Increment,
+    own_ref,
+    spend_tx([bare_output(42, 2_000_000)]),
   )
 }
 
@@ -211,6 +240,15 @@ test batch_lovelace_drain_rejected() {
   )
 }
 
+test batch_token_dropped_rejected() {
+  !counter_batch(
+    Some(Model { count: 41 }),
+    queue_hash,
+    own_ref,
+    batch_tx([queue_entry(0, Increment)], [bare_output(42, 2_000_000)]),
+  )
+}
+
 test batch_empty_rejected() fail {
   counter_batch(
     Some(Model { count: 41 }),
@@ -285,5 +323,109 @@ test batch_terminal_step_rejected() fail {
       [queue_entry(0, Increment), queue_entry(1, Reset)],
       [state_output(42, 2_000_000)],
     ),
+  )
+}
+
+// --- Genesis (step 9): the one-shot mint that marks the state ---
+
+const seed_ref =
+  OutputReference {
+    transaction_id: #"3333333333333333333333333333333333333333333333333333333333333333",
+    output_index: 1,
+  }
+
+const founder = #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+fn seed_input() -> Input {
+  Input {
+    output_reference: seed_ref,
+    output: Output {
+      address: from_verification_key(founder),
+      value: from_lovelace(5_000_000),
+      datum: NoDatum,
+      reference_script: None,
+    },
+  }
+}
+
+fn mint_tx(
+  inputs: List<Input>,
+  outputs: List<Output>,
+  quantity: Int,
+) -> Transaction {
+  Transaction {
+    ..placeholder,
+    inputs,
+    outputs,
+    mint: from_asset(script_hash, reference_token_name, quantity),
+  }
+}
+
+test genesis_mint_accepted() {
+  counter_mint(
+    seed_ref,
+    script_hash,
+    mint_tx([seed_input()], [state_output(0, 2_000_000)], 1),
+  )
+}
+
+test genesis_without_seed_rejected() {
+  !counter_mint(
+    seed_ref,
+    script_hash,
+    mint_tx([state_input(0)], [state_output(0, 2_000_000)], 1),
+  )
+}
+
+test genesis_double_mint_rejected() {
+  !counter_mint(
+    seed_ref,
+    script_hash,
+    mint_tx([seed_input()], [state_output(0, 2_000_000)], 2),
+  )
+}
+
+test genesis_nonzero_count_rejected() {
+  !counter_mint(
+    seed_ref,
+    script_hash,
+    mint_tx([seed_input()], [state_output(7, 2_000_000)], 1),
+  )
+}
+
+test genesis_wrong_name_rejected() {
+  let tx = Transaction {
+    ..placeholder,
+    inputs: [seed_input()],
+    outputs: [state_output(0, 2_000_000)],
+    mint: from_asset(script_hash, "wrong", 1),
+  }
+  !counter_mint(seed_ref, script_hash, tx)
+}
+
+test genesis_split_state_rejected() fail {
+  counter_mint(
+    seed_ref,
+    script_hash,
+    mint_tx(
+      [seed_input()],
+      [state_output(0, 2_000_000), state_output(0, 2_000_000)],
+      1,
+    ),
+  )
+}
+
+test genesis_token_elsewhere_rejected() {
+  let strayed = Output {
+    address: from_verification_key(founder),
+    value: from_lovelace(2_000_000)
+      |> add(script_hash, reference_token_name, 1),
+    datum: NoDatum,
+    reference_script: None,
+  }
+  !counter_mint(
+    seed_ref,
+    script_hash,
+    mint_tx([seed_input()], [bare_output(0, 2_000_000), strayed], 1),
   )
 }

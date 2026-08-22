@@ -53,3 +53,9 @@ let msg_of_data text =
       | Tea_data.Constr (2, []) -> Ok Reset
       | Tea_data.Int _ | Tea_data.Bytes _ | Tea_data.Constr (_, _) ->
         Error ("not a counter msg: " ^ Tea_data.to_string data))
+
+(* CIP-67 label (100) prefix, then "counter": mirrors
+   counter.reference_token_name in lib/tea/counter.ak. The emulator
+   genesis test is the parity oracle: the client mints this name and
+   the validator demands its own. *)
+let reference_token_name_hex = "000643b0636f756e746572"

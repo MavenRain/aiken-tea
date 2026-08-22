@@ -7,17 +7,19 @@
 //// back to its author (`Reclaim`). The entry's min-ada is the batcher's
 //// fee.
 ////
-//// Known limit of the probe: `Process` proves an input at the state
-//// script exists, but a bare app like the counter has no genesis NFT,
-//// so anyone can stage a look-alike state UTxO at the state address and
-//// drain entries into it (censorship plus min-ada capture, never a
-//// forged state: the real state UTxO is untouched). An app that marks
-//// its state with a reference NFT (the registry pattern) closes this by
-//// checking the token in `keeps`.
+//// `Process` demands a state input that carries a token minted under
+//// the state script's own policy, not just one at the state address:
+//// anyone can pay a look-alike UTxO to that address, but only the state
+//// script's mint handler can create such a token, and both shipped apps
+//// mint it exactly once at a one-shot genesis (`tea.genesis`) and pin
+//// it to the state on every transition (`tea.spend_with`,
+//// `tea.batch_with`). A batch-capable app must mark its state this way,
+//// or no entry of its queue can ever be processed.
 
 use aiken/collection/list
 use aiken/crypto.{ScriptHash}
 use cardano/address.{Script}
+use cardano/assets
 use cardano/transaction.{Transaction}
 use tea.{Queued}
 
@@ -41,7 +43,12 @@ pub fn queue_spend(
     Process ->
       list.any(
         self.inputs,
-        fn(input) { input.output.address.payment_credential == Script(state) },
+        fn(input) {
+          and {
+            input.output.address.payment_credential == Script(state),
+            list.has(assets.policies(input.output.value), state),
+          }
+        },
       )
     Reclaim -> {
       expect Some(queued) = datum
