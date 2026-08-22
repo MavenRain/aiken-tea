@@ -41,8 +41,9 @@ let applied_validator ~(compiled_code : string) ~(owner_hash : string)
       (validator, Lucid.minting_policy_to_id validator))
     (params ~owner_hash ~seed_tx_hash ~seed_index)
 
-let app ~(compiled_code : string) ~(owner_hash : string)
-    ~(owner_address : string) ~(seed_tx_hash : string) ~(seed_index : int) :
+let app ~(compiled_code : string) ~(exported_update : string)
+    ~(owner_hash : string) ~(owner_address : string)
+    ~(seed_tx_hash : string) ~(seed_index : int) :
     ((Registry.model, Registry.msg) Tea.app * string, string) result =
   Result.map
     (fun (validator, policy_id) ->
@@ -50,6 +51,12 @@ let app ~(compiled_code : string) ~(owner_hash : string)
           model_to_data = Registry.model_to_data;
           model_of_data = Registry.model_of_data;
           msg_to_data = Registry.msg_to_data;
+          (* registry.update already returns the Option verdict the
+             runtime compares against; no wrapping is needed. *)
+          uplc_step =
+            Some
+              (Uplc.step
+                 (Uplc.of_compiled_code ~compiled_code:exported_update));
           (* Every build carries the owner's signature; the terminal
              retire also burns the reference NFT under the script's own
              policy (the spend attachment already witnesses the mint:

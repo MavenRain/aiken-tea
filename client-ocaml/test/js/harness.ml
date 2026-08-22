@@ -19,6 +19,22 @@ let compiled_code ~(title : string) : (string, string) result =
          Js.to_string (Js.Unsafe.get entry (Js.string "compiledCode")))
     |> Option.to_result ~none:(title ^ " missing from plutus.json")
 
+(* The compiledCode of an exported update program, from the JSON
+   files the node driver injects as globalThis.UplcExports. *)
+let exported_update ~(app : string) : (string, string) result =
+  let exports = Js.Unsafe.get Js.Unsafe.global (Js.string "UplcExports") in
+  if Lucid.nullish exports then Error "globalThis.UplcExports missing"
+  else
+    let entry = Js.Unsafe.get exports (Js.string app) in
+    if Lucid.nullish entry then Error (app ^ " missing from UplcExports")
+    else Ok (Js.to_string (Js.Unsafe.get entry (Js.string "compiledCode")))
+
+(* True when [message] contains [fragment] (JS String.includes). *)
+let mentions (fragment : string) (message : string) : bool =
+  Js.Unsafe.meth_call (Js.string message) "includes"
+    [| Js.Unsafe.inject (Js.string fragment) |]
+  |> Js.to_bool
+
 let check message condition = if condition then Ok () else Error message
 
 (* A transaction build that must be rejected by the validator when the

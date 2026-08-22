@@ -1,0 +1,106 @@
+{
+  "name": "tea/registry.update",
+  "parameters": [
+    {
+      "title": "msg",
+      "schema": {
+        "$ref": "#/definitions/tea~1registry~1Msg"
+      }
+    },
+    {
+      "title": "model",
+      "schema": {
+        "$ref": "#/definitions/tea~1registry~1Model"
+      }
+    }
+  ],
+  "return_type": {
+    "title": "return_type",
+    "schema": {
+      "$ref": "#/definitions/Option<tea~1registry~1Model>"
+    }
+  },
+  "compiledCode": "5868010100229800aba2aba1aba0aab9eaab9dab9a48888896600266e1d2000300237540111323374a90001980299ba548000cc014c018004cc014dd419b8048008dd69803180398021baa00833005300630070014bd7025eb80c00cdd500445300103d87a8000400401",
+  "hash": "754ae1546b8ea8055b7b9197d92eaae16df54ad9adb4a0385ad01d15",
+  "definitions": {
+    "ByteArray": {
+      "dataType": "bytes"
+    },
+    "Int": {
+      "dataType": "integer"
+    },
+    "Option<tea/registry/Model>": {
+      "title": "Option",
+      "anyOf": [
+        {
+          "title": "Some",
+          "description": "An optional value.",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "$ref": "#/definitions/tea~1registry~1Model"
+            }
+          ]
+        },
+        {
+          "title": "None",
+          "description": "Nothing.",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": []
+        }
+      ]
+    },
+    "tea/registry/Model": {
+      "title": "Model",
+      "anyOf": [
+        {
+          "title": "Model",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "cid",
+              "$ref": "#/definitions/ByteArray"
+            },
+            {
+              "title": "version",
+              "$ref": "#/definitions/Int"
+            },
+            {
+              "title": "frontend_hash",
+              "$ref": "#/definitions/ByteArray"
+            }
+          ]
+        }
+      ]
+    },
+    "tea/registry/Msg": {
+      "title": "Msg",
+      "anyOf": [
+        {
+          "title": "Publish",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "cid",
+              "$ref": "#/definitions/ByteArray"
+            },
+            {
+              "title": "frontend_hash",
+              "$ref": "#/definitions/ByteArray"
+            }
+          ]
+        },
+        {
+          "title": "Retire",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": []
+        }
+      ]
+    }
+  }
+}

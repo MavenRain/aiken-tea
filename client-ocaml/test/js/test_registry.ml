@@ -53,8 +53,8 @@ let state_assets ctx =
 (* Fresh emulator and wallet; the wallet's single UTxO is the seed the
    validator parameters pin. Stops short of genesis so the mint tests
    can build their own. *)
-let prepare (compiled : string) : (ctx * Lucid.utxo, string) result Promise_js.t
-    =
+let prepare ((compiled, exported) : string * string) :
+    (ctx * Lucid.utxo, string) result Promise_js.t =
   let account = Lucid.generate_emulator_account ~lovelace:"100000000000" in
   let emulator = Lucid.emulator [ account ] in
   Promise_js.bind (Lucid.connect_custom emulator) (fun lucid ->
@@ -65,6 +65,7 @@ let prepare (compiled : string) : (ctx * Lucid.utxo, string) result Promise_js.t
         | [] -> Promise_js.return (Error "wallet has no seed UTxO")
         | seed :: _ ->
           Registry_app.app ~compiled_code:compiled
+            ~exported_update:exported
             ~owner_hash:(Lucid.payment_credential_hash owner_address)
             ~owner_address
             ~seed_tx_hash:(Lucid.utxo_tx_hash seed)
@@ -82,8 +83,8 @@ let prepare (compiled : string) : (ctx * Lucid.utxo, string) result Promise_js.t
                         },
                         seed ))))))
 
-let setup (compiled : string) : (ctx, string) result Promise_js.t =
-  Promise_js.bind_ok (prepare compiled) (fun (ctx, seed) ->
+let setup (code : string * string) : (ctx, string) result Promise_js.t =
+  Promise_js.bind_ok (prepare code) (fun (ctx, seed) ->
     Promise_js.bind_ok
       (Registry_app.genesis ctx.handle ~policy_id:ctx.policy_id ~seed
          ~initial:genesis_model ~lovelace:(Lucid.bigint state_lovelace))
@@ -164,10 +165,10 @@ let ipfs_api () : string option =
   if Lucid.nullish value then None
   else Some (Js.to_string (Js.Unsafe.coerce value))
 
-let tests compiled =
+let tests code =
   [ ( "genesis deploys version zero with the reference NFT",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             let quantity =
               Lucid.lovelace_to_string
@@ -180,7 +181,7 @@ let tests compiled =
                  ~ok:(fun () -> expect_confirmed ctx genesis_model))) );
     ( "confirms each published upgrade on-chain",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           let first = next_of upgrade genesis_model in
           let second_msg =
             Registry.Publish
@@ -195,7 +196,7 @@ let tests compiled =
                   expect_confirmed ctx (next_of second_msg first))))) );
     ( "rejects an unsigned publish",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             let next =
               Registry.model_to_data (next_of upgrade genesis_model)
@@ -205,7 +206,7 @@ let tests compiled =
                  [ (next, state_assets ctx) ]))) );
     ( "rejects a forged version jump",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             let forged =
               Registry.model_to_data
@@ -216,7 +217,7 @@ let tests compiled =
                  [ (forged, state_assets ctx) ]))) );
     ( "rejects a publish that strips the reference NFT",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             let next =
               Registry.model_to_data (next_of upgrade genesis_model)
@@ -229,7 +230,7 @@ let tests compiled =
                  ]))) );
     ( "rejects an ill-formed publish with an empty cid",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             let empty =
               Registry.Publish
@@ -243,7 +244,7 @@ let tests compiled =
                  [ (next, state_assets ctx) ]))) );
     ( "rejects a genesis that mints more than one reference token",
       fun () ->
-        Promise_js.bind_ok (prepare compiled) (fun (ctx, seed) ->
+        Promise_js.bind_ok (prepare code) (fun (ctx, seed) ->
           Harness.expect_reject
             (Lucid.new_tx ctx.lucid
             |> Lucid.collect_from_wallet ~utxos:[ seed ]
@@ -261,7 +262,7 @@ let tests compiled =
                       ]))) );
     ( "publishes a real bundle whose cid and hash match the oracle",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           fixture_bytes ()
           |> Result.fold
                ~error:(fun message -> Promise_js.return (Error message))
@@ -286,7 +287,7 @@ let tests compiled =
                           ~ok:(fun () -> expect_confirmed ctx expected)))) );
     ( "retires the registry: burns the NFT and ends the state",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           Promise_js.bind_ok (Registry_app.retire ctx.handle)
             (fun (_ : string) ->
               Lucid.await_block ctx.emulator 1;
@@ -310,7 +311,7 @@ let tests compiled =
                              (Harness.check "reference NFT burned" (not held))))))) );
     ( "rejects an unsigned retire",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             Harness.expect_reject ~probe:"script"
               (hand_built ctx utxo Registry.Retire ~signed:false []
@@ -319,7 +320,7 @@ let tests compiled =
                    ~redeemer:Registry_app.void_redeemer))) );
     ( "rejects a retire that keeps a state output",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             Harness.expect_reject
               (hand_built ctx utxo Registry.Retire ~signed:true
@@ -332,7 +333,7 @@ let tests compiled =
                    ~redeemer:Registry_app.void_redeemer))) );
     ( "rejects a retire that pockets the NFT instead of burning",
       fun () ->
-        Promise_js.bind_ok (setup compiled) (fun ctx ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
           Promise_js.bind_ok (Tea.state_utxo ctx.handle) (fun utxo ->
             Harness.expect_reject
               (hand_built ctx utxo Registry.Retire ~signed:true []))) );
@@ -354,11 +355,70 @@ let tests compiled =
                           Promise_js.return
                             (Harness.check ("daemon cid " ^ pinned)
                                (pinned = fixture_cid))))))
-          () )
+          () );
+    ( "uplc publish and retire match the mirror",
+      fun () ->
+        Promise_js.return
+          (Result.bind (Harness.exported_update ~app:"registry")
+             (fun exported ->
+               let uplc_step =
+                 Uplc.step (Uplc.of_compiled_code ~compiled_code:exported)
+               in
+               List.fold_left
+                 (fun acc msg ->
+                   Result.bind acc (fun () ->
+                     Result.bind
+                       (uplc_step
+                          ~msg:(Registry.msg_to_data msg)
+                          ~model:(Registry.model_to_data genesis_model))
+                       (fun on_chain ->
+                         let mirrored =
+                           Tea.verdict_to_data Registry.model_to_data
+                             (Registry.update msg genesis_model)
+                         in
+                         Harness.check
+                           (Printf.sprintf "uplc %s, mirror %s" on_chain
+                              mirrored)
+                           (String.equal on_chain mirrored))))
+                 (Ok ())
+                 [ upgrade; Registry.Retire ])) );
+    ( "a divergent registry mirror is caught before submission",
+      fun () ->
+        Promise_js.bind_ok (setup code) (fun ctx ->
+          let divergent =
+            { ctx.handle with
+              Tea.app =
+                { (app_of ctx) with
+                  Tea.update =
+                    (fun msg model ->
+                      Registry.update msg model
+                      |> Option.map (fun next ->
+                           { next with
+                             Registry.version = next.Registry.version + 1
+                           }))
+                }
+            }
+          in
+          Promise_js.bind (Tea.dispatch divergent upgrade) (fun outcome ->
+            Result.fold
+              ~ok:(fun ((_ : Registry.model), (_ : string)) ->
+                Promise_js.return
+                  (Error "dispatch succeeded on a divergent mirror"))
+              ~error:(fun message ->
+                Harness.check ("divergence not reported: " ^ message)
+                  (Harness.mentions "diverges" message)
+                |> Result.fold
+                     ~error:(fun inner -> Promise_js.return (Error inner))
+                     ~ok:(fun () -> expect_confirmed ctx genesis_model))
+              outcome)) )
   ]
 
 let () =
-  Harness.compiled_code ~title:"registry.registry.spend"
+  Result.bind (Harness.compiled_code ~title:"registry.registry.spend")
+    (fun compiled ->
+      Result.map
+        (fun exported -> (compiled, exported))
+        (Harness.exported_update ~app:"registry"))
   |> Result.fold
        ~ok:(fun code -> Harness.run (tests code))
        ~error:(fun message ->

@@ -1,0 +1,13 @@
+{
+  "name": "@mavenrain/aiken-tea-uplc-machine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Isolated CEK-machine dependency tree for evaluating exported update programs; kept separate so the main package's Lucid peer resolution stays untouched.",
+  "dependencies": {
+    "@harmoniclabs/uplc": "^2.0.7",
+    "@harmoniclabs/plutus-machine": "^3.0.3",
+    "@harmoniclabs/plutus-data": "^2.0.1"
+  }
+}

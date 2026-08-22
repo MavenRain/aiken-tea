@@ -1,0 +1,69 @@
+{
+  "name": "tea/counter.update",
+  "parameters": [
+    {
+      "title": "msg",
+      "schema": {
+        "$ref": "#/definitions/tea~1counter~1Msg"
+      }
+    },
+    {
+      "title": "model",
+      "schema": {
+        "$ref": "#/definitions/tea~1counter~1Model"
+      }
+    }
+  ],
+  "return_type": {
+    "title": "return_type",
+    "schema": {
+      "$ref": "#/definitions/tea~1counter~1Model"
+    }
+  },
+  "compiledCode": "586f010100229800aba1aba0aab9eaab9dab9a488888c96600266e1d2000001899ba548000cc014dd419b8048008dd6980318021baa0074bd70456600266e1d2002001899ba548000cc014dd419b8048004dd6980318021baa0074bd7045300105d8799f00ff0040088010c008dd500381",
+  "hash": "7946f9f86e20b9f75824666b2cc3ca02b6cae3878e51534685891926",
+  "definitions": {
+    "Int": {
+      "dataType": "integer"
+    },
+    "tea/counter/Model": {
+      "title": "Model",
+      "anyOf": [
+        {
+          "title": "Model",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "count",
+              "$ref": "#/definitions/Int"
+            }
+          ]
+        }
+      ]
+    },
+    "tea/counter/Msg": {
+      "title": "Msg",
+      "anyOf": [
+        {
+          "title": "Increment",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": []
+        },
+        {
+          "title": "Decrement",
+          "dataType": "constructor",
+          "index": 1,
+          "fields": []
+        },
+        {
+          "title": "Reset",
+          "dataType": "constructor",
+          "index": 2,
+          "fields": []
+        }
+      ]
+    }
+  }
+}

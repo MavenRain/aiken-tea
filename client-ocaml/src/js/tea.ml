@@ -2,9 +2,11 @@
    The on-chain half (lib/tea.ak)
    verifies one TEA step per transaction; this half produces those
    transactions. [dispatch] computes the next model locally with the
-   mirrored pure [update] (the optimistic update), then submits a
-   transaction the validator re-checks by recomputing the same step
-   on-chain. [subscribe] is the Sub side: it polls the script address
+   mirrored pure [update] (the optimistic update), checks that model
+   against the exported on-chain step evaluated off-chain (see Uplc),
+   then submits a transaction the validator re-checks by recomputing
+   the same step on-chain. [subscribe] is the Sub side: it polls the
+   script address
    and reports the confirmed model. Every fallible operation resolves
    to a [result]; nothing raises. *)
 
@@ -19,6 +21,12 @@ type ('model, 'msg) app = {
   model_to_data : 'model -> string;
   model_of_data : string -> ('model, string) result;
   msg_to_data : 'msg -> string;
+  (* The compiled on-chain step, exported by `aiken export` and
+     evaluated off-chain (see Uplc). Before submission the runtime
+     requires its verdict to equal the mirrored [update]'s, byte for
+     byte at the Data level: Constr 0 [model'] for a next model,
+     Constr 1 [] for a terminal verdict. [None] skips the check. *)
+  uplc_step : (msg:string -> model:string -> (string, string) result) option;
   (* Per-app decoration of every build, keyed by the message: extra
      required signers, the terminal token burn, and similar policy
      inputs the generic runtime cannot know. [fun _ builder -> builder]
@@ -79,6 +87,33 @@ let utxo_model handle utxo =
        (Lucid.utxo_datum utxo))
     handle.app.model_of_data
 
+(* The Data encoding of an update verdict: Some model' is Constr 0
+   [model'], None is Constr 1 []. CBOR composes, so wrapping the
+   already-encoded model hex reproduces exactly what Tea_data.encode
+   would emit for the same constructor. *)
+let verdict_to_data model_to_data verdict =
+  verdict
+  |> Option.fold ~none:"d87a80" ~some:(fun model ->
+       "d8799f" ^ model_to_data model ^ "ff")
+
+(* The optimistic-update gate: when the app carries the exported
+   on-chain step, evaluate it on the same (msg, model) and require
+   byte equality with the mirror's verdict. Divergence aborts before
+   any transaction is built. *)
+let mirror_check app msg model verdict =
+  app.uplc_step
+  |> Option.fold ~none:(Ok ()) ~some:(fun step ->
+       Result.bind
+         (step ~msg:(app.msg_to_data msg) ~model:(app.model_to_data model))
+         (fun on_chain ->
+           let mirrored = verdict_to_data app.model_to_data verdict in
+           if String.equal on_chain mirrored then Ok ()
+           else
+             Error
+               (Printf.sprintf
+                  "mirror diverges from the on-chain step: uplc %s, mirror %s"
+                  on_chain mirrored)))
+
 (* The confirmed on-chain model. *)
 let current_model handle =
   Promise_js.bind_ok (state_utxo handle) (fun utxo ->
@@ -100,6 +135,11 @@ let dispatch handle msg =
                   (Promise_js.return
                      (Error "terminal message: there is no next model, use halt"))
                 ~some:(fun predicted ->
+                  mirror_check handle.app msg model (Some predicted)
+                  |> Result.fold
+                       ~error:(fun message ->
+                         Promise_js.return (Error message))
+                       ~ok:(fun () ->
                   Promise_js.run
                     (Promise_js.map
                        (fun tx_hash -> Ok (predicted, tx_hash))
@@ -115,7 +155,7 @@ let dispatch handle msg =
                                ~assets:(Lucid.utxo_assets utxo)
                           |> handle.app.finish msg
                           |> Lucid.complete)
-                          Lucid.sign_and_submit)))))
+                          Lucid.sign_and_submit))))))
 
 (* One terminal TEA step: the message's update verdict must be [None].
    Spends the state UTxO with the message as redeemer and recreates
@@ -132,16 +172,20 @@ let halt handle msg =
              Promise_js.return
                (Error "not a terminal message: a next model exists, use dispatch")
            else
-             Promise_js.attempt
-               (Promise_js.bind
-                  (Lucid.new_tx handle.lucid
-                  |> Lucid.collect_from ~utxos:[ utxo ]
-                       ~redeemer:(handle.app.msg_to_data msg)
-                  |> Lucid.attach_spending_validator
-                       ~validator:handle.app.validator
-                  |> handle.app.finish msg
-                  |> Lucid.complete)
-                  Lucid.sign_and_submit)))
+             mirror_check handle.app msg model None
+             |> Result.fold
+                  ~error:(fun message -> Promise_js.return (Error message))
+                  ~ok:(fun () ->
+                    Promise_js.attempt
+                      (Promise_js.bind
+                         (Lucid.new_tx handle.lucid
+                         |> Lucid.collect_from ~utxos:[ utxo ]
+                              ~redeemer:(handle.app.msg_to_data msg)
+                         |> Lucid.attach_spending_validator
+                              ~validator:handle.app.validator
+                         |> handle.app.finish msg
+                         |> Lucid.complete)
+                         Lucid.sign_and_submit))))
 
 (* The Sub side: poll the script address and report each confirmed
    model. Returns the unsubscribe function. Poll errors are dropped,

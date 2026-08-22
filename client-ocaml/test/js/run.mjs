@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as LucidLib from "@lucid-evolution/lucid";
 
+
 // The js_of_ocaml runtime reaches for CommonJS require (fs, tty, ...);
 // give the ESM-loaded bundle one.
 globalThis.require = createRequire(import.meta.url);
@@ -15,6 +16,25 @@ globalThis.LucidLib = LucidLib;
 globalThis.Blueprint = JSON.parse(
   readFileSync(fileURLToPath(new URL("../../../plutus.json", import.meta.url)), "utf8"),
 );
+
+const machineLib = await import(
+  new URL("../../uplc/index.mjs", import.meta.url).href,
+);
+globalThis.UplcLib = machineLib.UplcLib;
+globalThis.PlutusMachine = machineLib.PlutusMachine;
+globalThis.PlutusData = machineLib.PlutusData;
+
+const exportedUpdate = (name) =>
+  JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL(`../../uplc/${name}-update.json`, import.meta.url)),
+      "utf8",
+    ),
+  );
+globalThis.UplcExports = {
+  counter: exportedUpdate("counter"),
+  registry: exportedUpdate("registry"),
+};
 
 globalThis.FixtureDir = fileURLToPath(new URL(".", import.meta.url));
 

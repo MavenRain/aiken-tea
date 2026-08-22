@@ -130,13 +130,102 @@ let tests app =
             in
             Harness.expect_reject
               (hand_built ctx utxo Counter.Increment
-                 [ (next, Lucid.bigint "2000000") ]))) )
+                 [ (next, Lucid.bigint "2000000") ]))) );
+    ( "uplc step matches the mirror on every message",
+      fun () ->
+        Promise_js.return
+          (List.fold_left
+             (fun acc (msg, count) ->
+               Result.bind acc (fun () ->
+                 Result.bind
+                   (Option.to_result ~none:"counter app carries no uplc step"
+                      app.Tea.uplc_step)
+                   (fun uplc_step ->
+                     Result.bind
+                       (uplc_step
+                          ~msg:(Counter.msg_to_data msg)
+                          ~model:(Counter.model_to_data { Counter.count }))
+                       (fun on_chain ->
+                         let mirrored =
+                           "d8799f"
+                           ^ Counter.model_to_data
+                               (Counter.update msg { Counter.count })
+                           ^ "ff"
+                         in
+                         Harness.check
+                           (Printf.sprintf "%s on %d: uplc %s, mirror %s"
+                              (Counter.msg_to_string msg) count on_chain
+                              mirrored)
+                           (String.equal on_chain mirrored)))))
+             (Ok ())
+             [ (Counter.Increment, 0);
+               (Counter.Increment, 41);
+               (Counter.Decrement, 5);
+               (Counter.Decrement, 0);
+               (Counter.Reset, 7)
+             ]) );
+    ( "a divergent mirror is caught before submission",
+      fun () ->
+        let divergent =
+          { app with
+            Tea.update =
+              (fun msg model ->
+                Some
+                  (match msg with
+                  | Counter.Increment ->
+                    { Counter.count = model.Counter.count + 2 }
+                  | Counter.Decrement | Counter.Reset ->
+                    Counter.update msg model))
+          }
+        in
+        Promise_js.bind_ok (setup divergent) (fun ctx ->
+          Promise_js.bind (Tea.dispatch ctx.handle Counter.Increment)
+            (fun outcome ->
+              Result.fold
+                ~ok:(fun ((_ : Counter.model), (_ : string)) ->
+                  Promise_js.return
+                    (Error "dispatch succeeded on a divergent mirror"))
+                ~error:(fun message ->
+                  Harness.check ("divergence not reported: " ^ message)
+                    (Harness.mentions "diverges" message)
+                  |> Result.fold
+                       ~error:(fun inner ->
+                         Promise_js.return (Error inner))
+                       ~ok:(fun () -> expect_confirmed ctx 0))
+                outcome)) );
+    ( "a malformed exported program reports an error, not a crash",
+      fun () ->
+        let broken = Uplc.of_compiled_code ~compiled_code:"deadbeef" in
+        Promise_js.return
+          (Result.fold
+             ~ok:(fun (hex : string) ->
+               Error ("malformed program evaluated to " ^ hex))
+             ~error:(fun (_ : string) -> Ok ())
+             (Uplc.step broken ~msg:"d87980" ~model:"d8799f00ff")) );
+    ( "a non-constructor message is rejected by the machine",
+      fun () ->
+        Promise_js.return
+          (Result.bind (Harness.exported_update ~app:"counter")
+             (fun exported ->
+               let program =
+                 Uplc.of_compiled_code ~compiled_code:exported
+               in
+               Result.fold
+                 ~ok:(fun (hex : string) ->
+                   Error ("machine accepted an integer message: " ^ hex))
+                 ~error:(fun (_ : string) -> Ok ())
+                 (Uplc.step program ~msg:"00" ~model:"d8799f00ff"))) )
   ]
 
 let () =
-  Harness.compiled_code ~title:"counter.counter.spend"
+  Result.bind (Harness.compiled_code ~title:"counter.counter.spend")
+    (fun code ->
+      Result.map
+        (fun exported ->
+          Counter_app.app ~compiled_code:code ~exported_update:exported)
+        (Harness.exported_update ~app:"counter"))
   |> Result.fold
-       ~ok:(fun code -> Harness.run (tests (Counter_app.app code)))
+       ~ok:(fun app -> Harness.run (tests app))
        ~error:(fun message ->
          print_endline ("setup: " ^ message);
          Lucid.set_exit_code 1)

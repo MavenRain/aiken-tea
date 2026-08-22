@@ -74,15 +74,16 @@ aiken build
 1. This probe: generic transition check + counter, end to end. [DONE:
    on-chain half]
 2. Off-chain client: build/submit transitions (Lucid Evolution or
-   Mesh), browser-side optimistic `update` via WASM UPLC. [DONE:
-   `client-ocaml/`, mirrored OCaml `update`; WASM UPLC deferred]
+   Mesh), browser-side optimistic `update` via the compiled UPLC.
+   [DONE: `client-ocaml/`, mirrored OCaml `update` plus the
+   exported-UPLC differential gate (step 7)]
 3. IPFS deployment registry: CIP-68-style reference NFT holding
    `{cid, version, frontend_hash}` with a validator-enforced upgrade
    policy. [DONE: on-chain half + client mirror]
 4. Pinning tooling: derive a bundle's CIDv1 and blake2b-256 hash in
    pure OCaml, publish a real bundle end to end, and pin it on a kubo
-   daemon under a differential CID check. [DONE for one raw block
-   (up to 256 KiB); chunked dag-pb trees deferred]
+   daemon under a differential CID check. [DONE: raw blocks and
+   chunked dag-pb trees (step 6), so a bundle of any size gets a CID]
 5. Registry retirement: a terminal `Retire` message ends the state
    UTxO and burns the reference NFT under the same owner policy.
    [DONE: on-chain half + client mirror]
@@ -120,16 +121,42 @@ dependencies, and `Bundle.publish_msg` turns raw bytes into the
 adds-and-pins on a kubo daemon
 (`/api/v0/add?cid-version=1&raw-leaves=true&pin=true`) and requires
 the daemon's CID to equal the locally derived one: a differential
-check of the CID construction. One raw block (up to 256 KiB) is
-supported; chunked dag-pb trees are out of scope for the probe.
+check of the CID construction. A bundle that fits one 262144-byte
+chunk stays a raw block; a bigger one gets raw leaves under a
+balanced dag-pb tree of UnixFS File nodes (step 6), matching
+`ipfs add --cid-version 1 --raw-leaves`.
 Digest, base32 and CID vectors in the native suite are pinned to
 python3 hashlib / shasum / b2sum, and the emulator suite publishes the
 real `test/js/fixture-bundle.html` end to end. Set
 `IPFS_API=http://127.0.0.1:5001` to also exercise the daemon pin.
 
+## Optimistic eval (step 7)
+
+The mirrored OCaml `update` is fast but hand-written; the compiled
+UPLC is the truth. `aiken export -m tea/counter -n update` (and the
+registry equivalent) turns each update function into a standalone
+UPLC program, committed under `client-ocaml/uplc/`. The client
+evaluates that program off-chain on the harmoniclabs CEK machine
+(pure JS, so the same code runs in a browser; no WASM build is
+needed) and `dispatch`/`halt` refuse to submit a transaction when the
+mirror's verdict differs from the evaluated one, byte for byte at the
+Data level. The machine trio lives in its own package
+(`client-ocaml/uplc/package.json`) with its own lockfile: installed
+beside `@lucid-evolution/lucid` it would re-resolve Lucid's
+`@harmoniclabs` peer set and break Lucid's internal `instanceof`
+checks.
+
+Regenerate the exports after an update function changes:
+
+```
+aiken export -m tea/counter -n update > client-ocaml/uplc/counter-update.json
+aiken export -m tea/registry -n update > client-ocaml/uplc/registry-update.json
+```
+
 ```sh
 cd client-ocaml
 dune test        # native Data codec suite
 pnpm install
+pnpm --dir uplc install   # the isolated CEK-machine tree
 pnpm test        # js_of_ocaml bundles + Lucid emulator, no network needed
 ```
