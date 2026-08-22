@@ -7,6 +7,8 @@ open Tea_pure
 let roundtrips value =
   Tea_data.decode (Tea_data.encode value) = Ok value
 
+let hex = Tea_data.hex_of_string
+
 let checks =
   [ (* Vectors pinned against @lucid-evolution Data.to output. *)
     ("model {count=0} encodes as d8799f00ff",
@@ -89,7 +91,98 @@ let checks =
     ("update Decrement",
      Counter.update Counter.Decrement { count = 4 } = { Counter.count = 3 });
     ("update Reset",
-     Counter.update Counter.Reset { count = 4 } = { Counter.count = 0 })
+     Counter.update Counter.Reset { count = 4 } = { Counter.count = 0 });
+    (* Hash vectors, pinned to python3 hashlib and cross-checked with
+       shasum -a 256 / b2sum -l 256. The 64/128/200-byte inputs cover
+       the multi-block fold and both padding parities. *)
+    ("sha256 of empty",
+     hex (Hashes.sha256 "")
+     = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    ("sha256 of abc",
+     hex (Hashes.sha256 "abc")
+     = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    ("sha256 of the fixture greeting",
+     hex (Hashes.sha256 "hello aiken-tea\n")
+     = "9c4347cb168b05a614b721635cfe5dc94d6b63440b6b5f83ab0ce3cfc47a68aa");
+    ("sha256 of one full block",
+     hex (Hashes.sha256 (String.make 64 'a'))
+     = "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb");
+    ("sha256 of 200 bytes",
+     hex (Hashes.sha256 (String.make 200 'a'))
+     = "c2a908d98f5df987ade41b5fce213067efbcc21ef2240212a41e54b5e7c28ae5");
+    ("blake2b-256 of empty",
+     hex (Hashes.blake2b_256 "")
+     = "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8");
+    ("blake2b-256 of abc",
+     hex (Hashes.blake2b_256 "abc")
+     = "bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319");
+    ("blake2b-256 of the fixture greeting",
+     hex (Hashes.blake2b_256 "hello aiken-tea\n")
+     = "bfc98bca86ea2d3a92edcf3c8c0195e255c5da90f3b9be157141759db5c1179e");
+    ("blake2b-256 of one full block",
+     hex (Hashes.blake2b_256 (String.make 128 'a'))
+     = "ae2aa48507885c4c950fb809b2076f959cde9f8ea6da260d9a3587df33dac450");
+    ("blake2b-256 of 200 bytes",
+     hex (Hashes.blake2b_256 (String.make 200 'a'))
+     = "6b6e59aaf00eb730cf93de53560846722184bbd92f8368c21ffa95380c2f9fe6");
+    (* Byte ramps make every message word distinct, so a wrong sigma
+       permutation or word order cannot cancel out, unlike the uniform
+       'aaa...' blocks above. *)
+    ("sha256 of the 0..127 byte ramp",
+     hex (Hashes.sha256 (Tea_data.string_of_byte_list (List.init 128 Fun.id)))
+     = "471fb943aa23c511f6f72f8d1652d9c880cfa392ad80503120547703e56a2be5");
+    ("blake2b-256 of the 0..127 byte ramp",
+     hex
+       (Hashes.blake2b_256
+          (Tea_data.string_of_byte_list (List.init 128 Fun.id)))
+     = "c3582f71ebb2be66fa5dd750f80baae97554f3b015663c8be377cfcb2488c1d1");
+    ("blake2b-256 of the 0..199 byte ramp",
+     hex
+       (Hashes.blake2b_256
+          (Tea_data.string_of_byte_list (List.init 200 Fun.id)))
+     = "63c3d97a9f8894d5e043a707b0fee7f7ec4c049a23bbf1079df20b4165f9e22d");
+    (* Base32 (RFC 4648 lowercase, no padding) and LEB128, pinned to
+       python3 base64.b32encode and hand LEB128. *)
+    ("base32 of empty", Cid.base32 "" = "");
+    ("base32 of fo", Cid.base32 "fo" = "mzxq");
+    ("base32 of foob", Cid.base32 "foob" = "mzxw6yq");
+    ("base32 of foobar", Cid.base32 "foobar" = "mzxw6ytboi");
+    ("varint 0", hex (Cid.varint 0) = "00");
+    ("varint 127", hex (Cid.varint 127) = "7f");
+    ("varint 128", hex (Cid.varint 128) = "8001");
+    ("varint 300", hex (Cid.varint 300) = "ac02");
+    ("varint 262144", hex (Cid.varint 262144) = "808010");
+    (* CIDv1 raw-leaf vectors; the empty one is the well-known public
+       empty-block CID, confirming the version/codec/multihash prefix. *)
+    ("cid of empty",
+     Cid.of_raw_block ""
+     = Ok "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku");
+    ("cid of abc",
+     Cid.of_raw_block "abc"
+     = Ok "bafkreif2pall7dybz7vecqka3zo24irdwabwdi4wc55jznaq75q7eaavvu");
+    ("cid of the fixture greeting",
+     Cid.of_raw_block "hello aiken-tea\n"
+     = Ok "bafkreie4ind4wfulawtbjnzbmnop4xojjvvwgralnnpyhkym4ph4i6tivi");
+    ("cid accepts a full raw block",
+     Result.is_ok (Cid.of_raw_block (String.make 262144 'x')));
+    ("cid rejects past one raw block",
+     Result.is_error (Cid.of_raw_block (String.make 262145 'x')));
+    (* The pinning pipeline composes both digests into the message. *)
+    ("bundle publish_msg pairs cid with blake2b hash",
+     Bundle.publish_msg "hello aiken-tea\n"
+     = Ok
+         (Registry.Publish
+            { cid =
+                "bafkreie4ind4wfulawtbjnzbmnop4xojjvvwgralnnpyhkym4ph4i6tivi";
+              frontend_hash =
+                Tea_data.string_of_hex
+                  "bfc98bca86ea2d3a92edcf3c8c0195e255c5da90f3b9be157141759db5c1179e"
+                |> Result.value ~default:""
+            }));
+    ("bundle publish_msg rejects an oversize bundle",
+     Result.is_error (Bundle.publish_msg (String.make 262145 'x')));
+    ("bundle frontend_hash is 32 bytes, as well_formed requires",
+     String.length (Bundle.frontend_hash "anything") = 32)
   ]
 
 let () =

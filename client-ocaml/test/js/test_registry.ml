@@ -5,6 +5,7 @@
    dispatch to prove the validator (not the client) enforces the
    upgrade policy. Run via test/js/run.mjs with this bundle's path. *)
 
+open Js_of_ocaml
 open Tea_pure
 open Tea_client
 
@@ -122,6 +123,34 @@ let hand_built ctx utxo msg ~signed pays : Lucid.tx_builder =
   in
   if signed then Lucid.add_signer ~address:ctx.owner_address paid else paid
 
+(* Step 4 fixture: the exact bytes of fixture-bundle.html, with cid
+   and blake2b-256 hash pinned to python3 (hashlib, base64.b32encode). *)
+let fixture_cid =
+  "bafkreig4ltrhflupn7zg4oxoakcme5u5tr3yywijdzemdc5j3uvpgzarja"
+
+let fixture_hash =
+  Tea_data.string_of_hex
+    "f3a39b85cda458814a0f9df6a93b34bab135242cfe8e00f0ceda39f033f5e611"
+  |> Result.value ~default:""
+
+let fixture_path () : (string, string) result =
+  let dir = Js.Unsafe.get Js.Unsafe.global (Js.string "FixtureDir") in
+  if Lucid.nullish dir then Error "globalThis.FixtureDir missing"
+  else Ok (Js.to_string (Js.Unsafe.coerce dir) ^ "fixture-bundle.html")
+
+let fixture_bytes () : (string, string) result =
+  Result.bind (fixture_path ()) (fun path -> Registry_app.read_file ~path)
+
+let ipfs_api_js =
+  Js.Unsafe.eval_string
+    "(function () { return typeof process === 'undefined' ? null : \
+     (process.env.IPFS_API || null); })"
+
+let ipfs_api () : string option =
+  let value = Js.Unsafe.fun_call ipfs_api_js [||] in
+  if Lucid.nullish value then None
+  else Some (Js.to_string (Js.Unsafe.coerce value))
+
 let tests compiled =
   [ ( "genesis deploys version zero with the reference NFT",
       fun () ->
@@ -216,7 +245,51 @@ let tests compiled =
                    (Lucid.assets_of
                       [ ("lovelace", Lucid.bigint state_lovelace);
                         (unit_of ctx, Lucid.bigint "2")
-                      ]))) )
+                      ]))) );
+    ( "publishes a real bundle whose cid and hash match the oracle",
+      fun () ->
+        Promise_js.bind_ok (setup compiled) (fun ctx ->
+          fixture_bytes ()
+          |> Result.fold
+               ~error:(fun message -> Promise_js.return (Error message))
+               ~ok:(fun bytes ->
+                 Promise_js.bind_ok
+                   (Registry_app.publish_bundle ctx.handle ~bytes)
+                   (fun (predicted, (_ : string)) ->
+                     Lucid.await_block ctx.emulator 1;
+                     let expected =
+                       { Registry.cid = fixture_cid;
+                         version = 1;
+                         frontend_hash = fixture_hash
+                       }
+                     in
+                     Harness.check
+                       (Printf.sprintf "predicted %s, expected %s"
+                          (model_text predicted) (model_text expected))
+                       (predicted = expected)
+                     |> Result.fold
+                          ~error:(fun message ->
+                            Promise_js.return (Error message))
+                          ~ok:(fun () -> expect_confirmed ctx expected)))) );
+    ( "pins on the daemon with an equal cid (needs IPFS_API)",
+      fun () ->
+        (ipfs_api ()
+        |> Option.fold
+             ~none:(fun () ->
+               print_endline "      (pin skipped: IPFS_API unset)";
+               Promise_js.return (Ok ()))
+             ~some:(fun endpoint () ->
+               fixture_bytes ()
+               |> Result.fold
+                    ~error:(fun message -> Promise_js.return (Error message))
+                    ~ok:(fun bytes ->
+                      Promise_js.bind_ok
+                        (Registry_app.pin_bundle ~endpoint ~bytes)
+                        (fun pinned ->
+                          Promise_js.return
+                            (Harness.check ("daemon cid " ^ pinned)
+                               (pinned = fixture_cid))))))
+          () )
   ]
 
 let () =

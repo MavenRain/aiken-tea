@@ -4,6 +4,7 @@
    signature. [genesis] is the one-shot mint that creates the
    reference NFT and the version-0 state UTxO. *)
 
+open Js_of_ocaml
 open Tea_pure
 
 let void_redeemer = Tea_data.encode (Constr (0, []))
@@ -78,3 +79,80 @@ let genesis (handle : (Registry.model, Registry.msg) Tea.handle)
                  [ ("lovelace", lovelace); (unit, Lucid.bigint "1") ])
        |> Lucid.complete)
        Lucid.sign_and_submit)
+
+(* --- Step 4: the pinning pipeline, JS half --- *)
+
+(* Raw bytes of a file through Node's fs, hex round-tripped so bytes
+   past 0x7f survive the JS string boundary; null on any fs error. *)
+let read_file_js =
+  Js.Unsafe.eval_string
+    "(function (path) { try { return \
+     require('fs').readFileSync(path).toString('hex'); } catch (err) { \
+     return null; } })"
+
+let read_file ~(path : string) : (string, string) result =
+  let value =
+    Js.Unsafe.fun_call read_file_js [| Js.Unsafe.inject (Js.string path) |]
+  in
+  if Lucid.nullish value then Error ("cannot read " ^ path)
+  else
+    Result.map_error Tea_data.error_to_string
+      (Tea_data.string_of_hex (Js.to_string (Js.Unsafe.coerce value)))
+
+(* Publish a bundle through the TEA runtime: derive its CID and
+   blake2b-256 hash with Bundle, dispatch the Publish message. *)
+let publish_bundle (handle : (Registry.model, Registry.msg) Tea.handle)
+    ~(bytes : string) :
+    (Registry.model * string, string) result Promise_js.t =
+  Bundle.publish_msg bytes
+  |> Result.fold
+       ~error:(fun message -> Promise_js.return (Error message))
+       ~ok:(fun msg -> Tea.dispatch handle msg)
+
+(* Add-and-pin on a kubo daemon's HTTP API, with the flags that make
+   the daemon derive the same raw-leaf CIDv1 the pure code computes.
+   Resolves to the daemon's CID string. *)
+let add_to_daemon_js =
+  Js.Unsafe.eval_string
+    "(function (endpoint, hex) {\
+       var bytes = Uint8Array.from(hex.match(/../g) || [], function (h) {\
+         return parseInt(h, 16); });\
+       var form = new FormData();\
+       form.append('file', new Blob([bytes]));\
+       return fetch(endpoint\
+           + '/api/v0/add?cid-version=1&raw-leaves=true&pin=true',\
+         { method: 'POST', body: form })\
+         .then(function (res) {\
+           if (!res.ok) { throw new Error('daemon status ' + res.status); }\
+           return res.json();\
+         })\
+         .then(function (body) { return body.Hash; });\
+     })"
+
+(* Pin the bundle and require the daemon's CID to equal the locally
+   derived one: a differential check of the pure CID construction
+   against the pinning service. *)
+let pin_bundle ~(endpoint : string) ~(bytes : string) :
+    (string, string) result Promise_js.t =
+  Bundle.cid bytes
+  |> Result.fold
+       ~error:(fun message -> Promise_js.return (Error message))
+       ~ok:(fun local ->
+         Promise_js.bind
+           (Promise_js.attempt
+              (Promise_js.of_any
+                 (Js.Unsafe.fun_call add_to_daemon_js
+                    [| Js.Unsafe.inject (Js.string endpoint);
+                       Js.Unsafe.inject
+                         (Js.string (Tea_data.hex_of_string bytes))
+                    |])))
+           (fun outcome ->
+             Promise_js.return
+               (Result.bind outcome (fun pinned ->
+                  let pinned = Js.to_string (Js.Unsafe.coerce pinned) in
+                  if pinned = local then Ok local
+                  else
+                    Error
+                      (Printf.sprintf
+                         "daemon pinned %s but the local CID is %s" pinned
+                         local)))))

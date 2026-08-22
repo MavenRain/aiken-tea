@@ -16,6 +16,8 @@ globalThis.Blueprint = JSON.parse(
   readFileSync(fileURLToPath(new URL("../../../plutus.json", import.meta.url)), "utf8"),
 );
 
+globalThis.FixtureDir = fileURLToPath(new URL(".", import.meta.url));
+
 const bundle =
   process.argv[2] ??
   fileURLToPath(
