@@ -21,6 +21,14 @@ type ('model, 'msg) app = {
   model_to_data : 'model -> string;
   model_of_data : string -> ('model, string) result;
   msg_to_data : 'msg -> string;
+  (* Decode one queued Data payload back into the message it carries:
+     the batch fold (see [process_queue]) mirrors the on-chain
+     `decode` the same way [update] mirrors the on-chain step. *)
+  msg_of_data : string -> ('msg, string) result;
+  (* The full redeemer for one dispatched message. A batch-capable app
+     wraps the message in `Single` (tea.Action); an app without a
+     queue sends the bare message. *)
+  msg_to_redeemer : 'msg -> string;
   (* The compiled on-chain step, exported by `aiken export` and
      evaluated off-chain (see Uplc). Before submission the runtime
      requires its verdict to equal the mirrored [update]'s, byte for
@@ -146,7 +154,7 @@ let dispatch handle msg =
                        (Promise_js.bind
                           (Lucid.new_tx handle.lucid
                           |> Lucid.collect_from ~utxos:[ utxo ]
-                               ~redeemer:(handle.app.msg_to_data msg)
+                               ~redeemer:(handle.app.msg_to_redeemer msg)
                           |> Lucid.attach_spending_validator
                                ~validator:handle.app.validator
                           |> Lucid.pay_to_contract_assets
@@ -180,7 +188,7 @@ let halt handle msg =
                       (Promise_js.bind
                          (Lucid.new_tx handle.lucid
                          |> Lucid.collect_from ~utxos:[ utxo ]
-                              ~redeemer:(handle.app.msg_to_data msg)
+                              ~redeemer:(handle.app.msg_to_redeemer msg)
                          |> Lucid.attach_spending_validator
                               ~validator:handle.app.validator
                          |> handle.app.finish msg
@@ -209,3 +217,154 @@ let subscribe handle ~on_model ~interval_ms =
       (Js.Unsafe.fun_call
          (Js.Unsafe.get Js.Unsafe.global (Js.string "clearInterval"))
          [| timer |])
+
+(* --- Step 8: the message queue, batched dispatch --- *)
+
+(* A queue script bound to one app: the compiled queue validator with
+   the app's script hash applied as its parameter, the derived address
+   entries are locked at, and the queue's own script hash (what the
+   Batch redeemer names). *)
+type queue = {
+  queue_validator : Lucid.validator;
+  queue_address : string;
+  queue_hash : string;
+}
+
+let queue_for handle ~compiled_code =
+  Result.map
+    (fun validator ->
+      {
+        queue_validator = validator;
+        queue_address =
+          Lucid.validator_to_address (Lucid.network handle.lucid) validator;
+        queue_hash = Lucid.minting_policy_to_id validator;
+      })
+    (Result.map
+       (fun state_hash ->
+         Lucid.plutus_v3_validator
+           (Lucid.apply_params_to_script
+              ~params:
+                [
+                  Lucid.data_of_cbor_hex
+                    (Tea_pure.Tea_data.encode (Bytes state_hash));
+                ]
+              compiled_code))
+       (Result.map_error Tea_pure.Tea_data.error_to_string
+          (Tea_pure.Tea_data.string_of_hex
+             (Lucid.payment_credential_hash handle.address))))
+
+(* Lock one message at the queue address as a Queued inline datum,
+   authored by the connected wallet. The entry's lovelace is the
+   batcher's fee, or comes back on reclaim. Resolves to the
+   transaction hash. *)
+let enqueue handle queue msg ~lovelace =
+  Promise_js.bind (Lucid.wallet_address handle.lucid) (fun author_address ->
+    Tea_pure.Queue.queued_datum
+      ~author_hash:(Lucid.payment_credential_hash author_address)
+      ~msg_hex:(handle.app.msg_to_data msg)
+    |> Result.fold
+         ~error:(fun message -> Promise_js.return (Error message))
+         ~ok:(fun datum ->
+           Promise_js.attempt
+             (Promise_js.bind
+                (Lucid.new_tx handle.lucid
+                |> Lucid.pay_to_contract ~address:queue.queue_address ~datum
+                     ~lovelace
+                |> Lucid.complete)
+                Lucid.sign_and_submit)))
+
+(* The pending entries at the queue address, paired with their decoded
+   messages, in ledger input order (output reference: transaction id
+   lexicographically, then index) - the order the on-chain fold will
+   apply. An entry whose datum or message fails to decode is skipped:
+   junk parked at the queue address must not jam the batcher. *)
+let queue_entries handle queue =
+  Promise_js.map
+    (fun utxos ->
+      List.filter_map
+        (fun utxo ->
+          Option.bind (Lucid.utxo_datum utxo) (fun datum ->
+            Result.to_option
+              (Result.bind
+                 (Tea_pure.Queue.queued_msg_hex datum)
+                 handle.app.msg_of_data)
+            |> Option.map (fun msg -> (utxo, msg))))
+        utxos
+      |> List.sort (fun (a, (_ : 'msg)) (b, (_ : 'msg)) ->
+           let by_hash =
+             String.compare (Lucid.utxo_tx_hash a) (Lucid.utxo_tx_hash b)
+           in
+           if by_hash = 0 then
+             compare (Lucid.utxo_output_index a) (Lucid.utxo_output_index b)
+           else by_hash))
+    (Lucid.utxos_at handle.lucid queue.queue_address)
+
+(* One batched TEA step: drain every decodable queue entry into a
+   single transition. The mirror folds the messages in ledger input
+   order, gating each step through the optimistic-eval check; the
+   transaction then consumes the state UTxO (Batch redeemer, naming
+   the queue script) plus the entries (Process redeemer), and the
+   validator re-folds on-chain. The entries' lovelace, less the fee,
+   stays with the submitting wallet: the batcher's payment. Resolves
+   to the final model and the transaction hash. *)
+let process_queue handle queue =
+  Promise_js.bind_ok (state_utxo handle) (fun state ->
+    Promise_js.bind (queue_entries handle queue) (fun entries ->
+      Result.bind (utxo_model handle state) (fun model ->
+        match entries with
+        | [] -> Error "the queue is empty: nothing to batch"
+        | _ :: _ ->
+          List.fold_left
+            (fun acc ((_ : Lucid.utxo), msg) ->
+              Result.bind acc (fun current ->
+                handle.app.update msg current
+                |> Option.fold
+                     ~none:
+                       (Error "terminal message in a batch: a halt travels alone")
+                     ~some:(fun next ->
+                       Result.map
+                         (fun () -> next)
+                         (mirror_check handle.app msg current (Some next)))))
+            (Ok model) entries)
+      |> Result.fold
+           ~error:(fun message -> Promise_js.return (Error message))
+           ~ok:(fun final ->
+             Tea_pure.Queue.batch_redeemer ~queue_hash:queue.queue_hash
+             |> Result.fold
+                  ~error:(fun message -> Promise_js.return (Error message))
+                  ~ok:(fun batch ->
+                    Promise_js.run
+                      (Promise_js.map
+                         (fun tx_hash -> Ok (final, tx_hash))
+                         (Promise_js.bind
+                            (Lucid.new_tx handle.lucid
+                            |> Lucid.collect_from ~utxos:[ state ]
+                                 ~redeemer:batch
+                            |> Lucid.attach_spending_validator
+                                 ~validator:handle.app.validator
+                            |> Lucid.collect_from
+                                 ~utxos:(List.map fst entries)
+                                 ~redeemer:Tea_pure.Queue.process_redeemer
+                            |> Lucid.attach_spending_validator
+                                 ~validator:queue.queue_validator
+                            |> Lucid.pay_to_contract_assets
+                                 ~address:handle.address
+                                 ~datum:(handle.app.model_to_data final)
+                                 ~assets:(Lucid.utxo_assets state)
+                            |> Lucid.complete)
+                            Lucid.sign_and_submit))))))
+
+(* Take one queued entry back: the connected wallet must be the
+   entry's author (the validator checks the signature). Resolves to
+   the transaction hash. *)
+let reclaim handle queue utxo =
+  Promise_js.bind (Lucid.wallet_address handle.lucid) (fun author_address ->
+    Promise_js.attempt
+      (Promise_js.bind
+         (Lucid.new_tx handle.lucid
+         |> Lucid.collect_from ~utxos:[ utxo ]
+              ~redeemer:Tea_pure.Queue.reclaim_redeemer
+         |> Lucid.attach_spending_validator ~validator:queue.queue_validator
+         |> Lucid.add_signer ~address:author_address
+         |> Lucid.complete)
+         Lucid.sign_and_submit))

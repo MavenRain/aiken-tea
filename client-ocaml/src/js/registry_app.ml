@@ -51,6 +51,10 @@ let app ~(compiled_code : string) ~(exported_update : string)
           model_to_data = Registry.model_to_data;
           model_of_data = Registry.model_of_data;
           msg_to_data = Registry.msg_to_data;
+          msg_of_data = Registry.msg_of_data;
+          (* The registry has no queue: the redeemer is the bare
+             message. *)
+          msg_to_redeemer = Registry.msg_to_data;
           (* registry.update already returns the Option verdict the
              runtime compares against; no wrapping is needed. *)
           uplc_step =

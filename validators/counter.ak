@@ -1,14 +1,18 @@
 use cardano/transaction.{OutputReference, Transaction}
-use tea/counter.{Model, Msg, counter_spend} as counter_app
+use tea.{Action, Batch, Single}
+use tea/counter.{Model, Msg, counter_batch, counter_spend} as counter_app
 
 validator counter {
   spend(
     datum: Option<Model>,
-    redeemer: Msg,
+    redeemer: Action<Msg>,
     own_ref: OutputReference,
     self: Transaction,
   ) {
-    counter_spend(datum, redeemer, own_ref, self)
+    when redeemer is {
+      Single(msg) -> counter_spend(datum, msg, own_ref, self)
+      Batch { queue } -> counter_batch(datum, queue, own_ref, self)
+    }
   }
 
   else(_) {

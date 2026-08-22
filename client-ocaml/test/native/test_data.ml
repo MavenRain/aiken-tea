@@ -227,7 +227,54 @@ let checks =
              |> Result.value ~default:""
          });
     ("bundle frontend_hash is 32 bytes, as well_formed requires",
-     String.length (Bundle.frontend_hash "anything") = 32)
+     String.length (Bundle.frontend_hash "anything") = 32);
+    (* Step 8: batched-dispatch codecs (tea.Action, tea.Queued,
+       queue.Msg), vectors pinned by CBOR composition against the
+       constructor scheme Lucid's Data.to uses. *)
+    ("action Single(Increment) wraps the message as constructor 0",
+     Queue.single_redeemer (Counter.msg_to_data Counter.Increment)
+     = "d8799fd87980ff");
+    ("action Batch names the queue script hash as constructor 1",
+     Queue.batch_redeemer
+       ~queue_hash:"11111111111111111111111111111111111111111111111111111111"
+     = Ok
+         "d87a9f581c11111111111111111111111111111111111111111111111111111111ff");
+    ("action Batch rejects a non-hex queue hash",
+     Result.is_error (Queue.batch_redeemer ~queue_hash:"zz"));
+    ("queue Process encodes as d87980", Queue.process_redeemer = "d87980");
+    ("queue Reclaim encodes as d87a80", Queue.reclaim_redeemer = "d87a80");
+    ("queued datum pairs the author hash with the message",
+     Queue.queued_datum
+       ~author_hash:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+       ~msg_hex:(Counter.msg_to_data Counter.Reset)
+     = Ok
+         "d8799f581caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad87b80ff");
+    ("queued datum rejects a non-hex author hash",
+     Result.is_error (Queue.queued_datum ~author_hash:"nope" ~msg_hex:"d87980"));
+    ("queued_msg_hex extracts the message payload back out",
+     Result.bind
+       (Queue.queued_datum
+          ~author_hash:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ~msg_hex:(Counter.msg_to_data Counter.Decrement))
+       Queue.queued_msg_hex
+     = Ok "d87a80");
+    ("queued_msg_hex rejects a payload that is not a queued entry",
+     Result.is_error (Queue.queued_msg_hex "d87980"));
+    ("counter msg_of_data inverts msg_to_data on every message",
+     List.for_all
+       (fun msg -> Counter.msg_of_data (Counter.msg_to_data msg) = Ok msg)
+       [ Counter.Increment; Counter.Decrement; Counter.Reset ]);
+    ("counter msg_of_data rejects an integer payload",
+     Result.is_error (Counter.msg_of_data "00"));
+    ("registry msg_of_data inverts msg_to_data on publish and retire",
+     List.for_all
+       (fun msg -> Registry.msg_of_data (Registry.msg_to_data msg) = Ok msg)
+       [ Registry.Publish
+           { cid = "bafy-v1"; frontend_hash = "0123456789abcdef0123456789abcdef" };
+         Registry.Retire
+       ]);
+    ("registry msg_of_data rejects a malformed constructor",
+     Result.is_error (Registry.msg_of_data "d87c80"))
   ]
 
 let () =

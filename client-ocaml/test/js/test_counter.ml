@@ -70,7 +70,7 @@ let hand_built ctx utxo msg pays : Lucid.tx_builder =
   let opening =
     Lucid.new_tx ctx.lucid
     |> Lucid.collect_from ~utxos:[ utxo ]
-         ~redeemer:((app_of ctx).Tea.msg_to_data msg)
+         ~redeemer:((app_of ctx).Tea.msg_to_redeemer msg)
     |> Lucid.attach_spending_validator
          ~validator:(app_of ctx).Tea.validator
   in
@@ -80,7 +80,56 @@ let hand_built ctx utxo msg pays : Lucid.tx_builder =
         builder)
     opening pays
 
-let tests app =
+(* --- Step 8 fixtures: a queue bound to the counter, two wallets --- *)
+
+type qctx = { ctx : ctx; seed_a : string; seed_b : string; queue : Tea.queue }
+
+(* Two funded accounts; wallet A deploys the state and stays selected.
+   The queue script gets the counter's script hash as its parameter. *)
+let setup_queue app ~queue_code : (qctx, string) result Promise_js.t =
+  let account_a = Lucid.generate_emulator_account ~lovelace:"100000000000" in
+  let account_b = Lucid.generate_emulator_account ~lovelace:"100000000000" in
+  let emulator = Lucid.emulator [ account_a; account_b ] in
+  Promise_js.bind (Lucid.connect_custom emulator) (fun lucid ->
+    Lucid.select_wallet_from_seed lucid (Lucid.account_seed account_a);
+    let handle = Tea.connect lucid app in
+    Promise_js.bind_ok
+      (Tea.deploy handle ~initial:{ Counter.count = 0 }
+         ~lovelace:(Lucid.bigint state_lovelace))
+      (fun (_ : string) ->
+        Lucid.await_block emulator 1;
+        Tea.queue_for handle ~compiled_code:queue_code
+        |> Result.fold
+             ~error:(fun message -> Promise_js.return (Error message))
+             ~ok:(fun queue ->
+               Promise_js.return
+                 (Ok
+                    {
+                      ctx = { emulator; lucid; handle };
+                      seed_a = Lucid.account_seed account_a;
+                      seed_b = Lucid.account_seed account_b;
+                      queue;
+                    }))))
+
+(* Enqueue [msg] as the wallet behind [seed], then confirm the block. *)
+let enqueue_as q seed msg : (unit, string) result Promise_js.t =
+  Lucid.select_wallet_from_seed q.ctx.lucid seed;
+  Promise_js.bind_ok
+    (Tea.enqueue q.ctx.handle q.queue msg ~lovelace:(Lucid.bigint "2000000"))
+    (fun (_ : string) ->
+      Lucid.await_block q.ctx.emulator 1;
+      Promise_js.return (Ok ()))
+
+let expect_entry_count q expected : (unit, string) result Promise_js.t =
+  Promise_js.map
+    (fun entries ->
+      Harness.check
+        (Printf.sprintf "queue holds %d entries, expected %d"
+           (List.length entries) expected)
+        (List.length entries = expected))
+    (Tea.queue_entries q.ctx.handle q.queue)
+
+let tests app queue_code =
   [ ( "deploys the initial model",
       fun () ->
         Promise_js.bind_ok (setup app) (fun ctx -> expect_confirmed ctx 0) );
@@ -214,18 +263,123 @@ let tests app =
                  ~ok:(fun (hex : string) ->
                    Error ("machine accepted an integer message: " ^ hex))
                  ~error:(fun (_ : string) -> Ok ())
-                 (Uplc.step program ~msg:"00" ~model:"d8799f00ff"))) )
+                 (Uplc.step program ~msg:"00" ~model:"d8799f00ff"))) );
+    ( "batches two users' queued messages into one transition",
+      fun () ->
+        Promise_js.bind_ok (setup_queue app ~queue_code) (fun q ->
+          Promise_js.bind_ok (enqueue_as q q.seed_a Counter.Increment)
+            (fun () ->
+              Promise_js.bind_ok (enqueue_as q q.seed_b Counter.Increment)
+                (fun () ->
+                  Lucid.select_wallet_from_seed q.ctx.lucid q.seed_a;
+                  Promise_js.bind_ok (Tea.process_queue q.ctx.handle q.queue)
+                    (fun (final, (_ : string)) ->
+                      Lucid.await_block q.ctx.emulator 1;
+                      Result.fold
+                        ~error:(fun message ->
+                          Promise_js.return (Error message))
+                        ~ok:(fun () ->
+                          Promise_js.bind_ok (expect_confirmed q.ctx 2)
+                            (fun () -> expect_entry_count q 0))
+                        (expect_predicted 2 final))))) );
+    ( "an empty queue refuses to batch",
+      fun () ->
+        Promise_js.bind_ok (setup_queue app ~queue_code) (fun q ->
+          Promise_js.bind (Tea.process_queue q.ctx.handle q.queue)
+            (fun outcome ->
+              Result.fold
+                ~ok:(fun ((_ : Counter.model), (_ : string)) ->
+                  Promise_js.return (Error "batched an empty queue"))
+                ~error:(fun message ->
+                  Promise_js.return
+                    (Harness.check
+                       ("emptiness not reported: " ^ message)
+                       (Harness.mentions "empty" message)))
+                outcome)) );
+    ( "reclaims a queued entry with the author's signature",
+      fun () ->
+        Promise_js.bind_ok (setup_queue app ~queue_code) (fun q ->
+          Promise_js.bind_ok (enqueue_as q q.seed_b Counter.Increment)
+            (fun () ->
+              Promise_js.bind (Tea.queue_entries q.ctx.handle q.queue)
+                (fun entries ->
+                  match entries with
+                  | [ (utxo, Counter.Increment) ] ->
+                    Promise_js.bind_ok (Tea.reclaim q.ctx.handle q.queue utxo)
+                      (fun (_ : string) ->
+                        Lucid.await_block q.ctx.emulator 1;
+                        Promise_js.bind_ok (expect_entry_count q 0) (fun () ->
+                          expect_confirmed q.ctx 0))
+                  | (_ : (Lucid.utxo * Counter.msg) list) ->
+                    Promise_js.return
+                      (Error "expected exactly the enqueued Increment")))) );
+    ( "a stranger cannot reclaim a queued entry",
+      fun () ->
+        Promise_js.bind_ok (setup_queue app ~queue_code) (fun q ->
+          Promise_js.bind_ok (enqueue_as q q.seed_b Counter.Increment)
+            (fun () ->
+              Lucid.select_wallet_from_seed q.ctx.lucid q.seed_a;
+              Promise_js.bind (Tea.queue_entries q.ctx.handle q.queue)
+                (fun entries ->
+                  match entries with
+                  | [ (utxo, (_ : Counter.msg)) ] ->
+                    Promise_js.bind (Tea.reclaim q.ctx.handle q.queue utxo)
+                      (fun outcome ->
+                        Result.fold
+                          ~ok:(fun (_ : string) ->
+                            Promise_js.return
+                              (Error "a stranger reclaimed the entry"))
+                          ~error:(fun (_ : string) -> expect_entry_count q 1)
+                          outcome)
+                  | (_ : (Lucid.utxo * Counter.msg) list) ->
+                    Promise_js.return
+                      (Error "expected exactly the enqueued Increment")))) );
+    ( "a divergent mirror halts the batch before submission",
+      fun () ->
+        let divergent =
+          { app with
+            Tea.update =
+              (fun msg model ->
+                Some
+                  (match msg with
+                  | Counter.Increment ->
+                    { Counter.count = model.Counter.count + 2 }
+                  | Counter.Decrement | Counter.Reset ->
+                    Counter.update msg model))
+          }
+        in
+        Promise_js.bind_ok (setup_queue divergent ~queue_code) (fun q ->
+          Promise_js.bind_ok (enqueue_as q q.seed_a Counter.Increment)
+            (fun () ->
+              Promise_js.bind (Tea.process_queue q.ctx.handle q.queue)
+                (fun outcome ->
+                  Result.fold
+                    ~ok:(fun ((_ : Counter.model), (_ : string)) ->
+                      Promise_js.return
+                        (Error "batch submitted on a divergent mirror"))
+                    ~error:(fun message ->
+                      Harness.check ("divergence not reported: " ^ message)
+                        (Harness.mentions "diverges" message)
+                      |> Result.fold
+                           ~error:(fun inner ->
+                             Promise_js.return (Error inner))
+                           ~ok:(fun () ->
+                             Promise_js.bind_ok (expect_confirmed q.ctx 0)
+                               (fun () -> expect_entry_count q 1)))
+                    outcome))) )
   ]
 
 let () =
   Result.bind (Harness.compiled_code ~title:"counter.counter.spend")
     (fun code ->
-      Result.map
-        (fun exported ->
-          Counter_app.app ~compiled_code:code ~exported_update:exported)
-        (Harness.exported_update ~app:"counter"))
+      Result.bind (Harness.exported_update ~app:"counter") (fun exported ->
+        Result.map
+          (fun queue_code ->
+            (Counter_app.app ~compiled_code:code ~exported_update:exported,
+             queue_code))
+          (Harness.compiled_code ~title:"queue.queue.spend")))
   |> Result.fold
-       ~ok:(fun app -> Harness.run (tests app))
+       ~ok:(fun (app, queue_code) -> Harness.run (tests app queue_code))
        ~error:(fun message ->
          print_endline ("setup: " ^ message);
          Lucid.set_exit_code 1)

@@ -34,11 +34,27 @@ of the pure `update` function per transaction.
 - `validators/registry.ak` - one script, two purposes: the mint policy
   id is the script's own hash, so the spend handler recovers it from
   its own address with no extra parameter.
+- `lib/tea/queue.ak` / `validators/queue.ak` - the message queue
+  (step 8): write-contention relief for the single state UTxO. A user
+  locks a message at the queue address (a `tea.Queued` inline datum)
+  instead of racing to spend the state; a batcher spends the state
+  UTxO plus any number of entries in one transaction, and `tea.batch`
+  requires the new state datum to equal the fold of `update` over the
+  queued messages in ledger input order. The queue script (one per
+  app, parameterized by the app's script hash) releases an entry only
+  into such a transaction (`Process`) or back to its author against a
+  signature (`Reclaim`); the entry's min-ada is the batcher's fee. The
+  counter validator's redeemer is now `tea.Action<Msg>`:
+  `Single(msg)` for the ordinary step, `Batch { queue }` for the fold.
+- `lib/tea/queue_test.ak` - transaction-level tests for both queue
+  exits; the batch-fold family (ordering, empty batch, malformed and
+  foreign entries, no halt inside a batch) lives in
+  `lib/tea/counter_test.ak`.
 
 ## Checks
 
 ```
-aiken check   # 39/39
+aiken check   # 55/55
 aiken build
 ```
 
@@ -160,3 +176,26 @@ pnpm install
 pnpm --dir uplc install   # the isolated CEK-machine tree
 pnpm test        # js_of_ocaml bundles + Lucid emulator, no network needed
 ```
+
+## Batched dispatch (step 8)
+
+One state UTxO admits one writer per block: concurrent `dispatch`
+calls race, and every loser rebuilds against the new state. The queue
+separates authoring from writing. `Tea.enqueue` locks a message at
+the queue address; `Tea.process_queue` (any wallet: the batcher)
+reads the pending entries in ledger input order, folds the mirrored
+`update` over them with the optimistic-eval gate checking every step,
+then submits one transaction that spends the state UTxO with the
+`Batch` redeemer and every entry with `Process`. The validator
+re-folds on-chain, so a batcher can censor or delay entries but never
+misapply or reorder them: the ledger fixes input order. `Tea.reclaim`
+takes an entry back to its author. Terminal messages are refused
+inside a batch, both by the mirror and on-chain: a halt travels alone
+through the single-message path.
+
+Known probe limit: the counter has no genesis NFT, so `Process` can
+be satisfied by a look-alike UTxO staged at the state address. An
+attacker can capture entries' min-ada that way without touching the
+real state (which stays intact). An app that marks its state with a
+reference NFT (the registry pattern) closes this in its `keeps`
+guard.

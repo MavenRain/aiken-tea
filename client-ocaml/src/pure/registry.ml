@@ -58,3 +58,14 @@ let msg_to_string msg =
   | Publish { cid; _ } -> "Publish " ^ cid
   | Retire -> "Retire"
 
+
+let msg_of_data text =
+  Result.bind
+    (Result.map_error Tea_data.error_to_string (Tea_data.decode text))
+    (fun data ->
+      match data with
+      | Tea_data.Constr (0, [ Tea_data.Bytes cid; Tea_data.Bytes frontend_hash ])
+        -> Ok (Publish { cid; frontend_hash })
+      | Tea_data.Constr (1, []) -> Ok Retire
+      | Tea_data.Int _ | Tea_data.Bytes _ | Tea_data.Constr (_, _) ->
+        Error ("not a registry msg: " ^ Tea_data.to_string data))

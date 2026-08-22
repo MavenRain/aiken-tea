@@ -13,6 +13,11 @@ let app ~(compiled_code : string) ~(exported_update : string) :
     model_to_data = Counter.model_to_data;
     model_of_data = Counter.model_of_data;
     msg_to_data = Counter.msg_to_data;
+    msg_of_data = Counter.msg_of_data;
+    (* The counter validator takes tea.Action: a single dispatch is
+       the message wrapped in the Single constructor. *)
+    msg_to_redeemer =
+      (fun msg -> Queue.single_redeemer (Counter.msg_to_data msg));
     (* counter.update returns the bare model on-chain; wrap it in the
        Some verdict the runtime compares against. *)
     uplc_step =

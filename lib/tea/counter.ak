@@ -1,6 +1,7 @@
 //// Counter: the smallest TEA application. `Model` is a single count,
 //// `Msg` is increment / decrement / reset.
 
+use aiken/crypto.{ScriptHash}
 use cardano/transaction.{OutputReference, Transaction}
 use tea
 
@@ -38,6 +39,38 @@ pub fn counter_spend(
 fn step(msg: Msg, model: Model) -> Data {
   let next: Data = update(msg, model)
   next
+}
+
+/// Batched spend logic: fold every message consumed from `queue` into
+/// the model (see `tea.batch`). Kept in the library so tests can call
+/// it directly.
+pub fn counter_batch(
+  datum: Option<Model>,
+  queue: ScriptHash,
+  own_ref: OutputReference,
+  self: Transaction,
+) -> Bool {
+  tea.batch(
+    fn(msg, model) { Some(update(msg, model)) },
+    decode_msg,
+    to_data,
+    datum,
+    queue,
+    own_ref,
+    self,
+  )
+}
+
+/// Downcast a queued `Data` payload at the counter's message type, the
+/// concrete site `tea.batch` cannot have.
+fn decode_msg(payload: Data) -> Msg {
+  expect msg: Msg = payload
+  msg
+}
+
+fn to_data(model: Model) -> Data {
+  let data: Data = model
+  data
 }
 
 test update_increment() {
