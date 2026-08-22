@@ -9,6 +9,10 @@ let roundtrips value =
 
 let hex = Tea_data.hex_of_string
 
+(* The n-byte ramp i land 0xff: no two chunks are equal, so a chunk-
+   or link-ordering mutation cannot hide behind repeated blocks. *)
+let ramp n = Tea_data.string_of_byte_list (List.init n (fun i -> i land 0xff))
+
 let checks =
   [ (* Vectors pinned against @lucid-evolution Data.to output. *)
     ("model {count=0} encodes as d8799f00ff",
@@ -173,20 +177,55 @@ let checks =
      Result.is_ok (Cid.of_raw_block (String.make 262144 'x')));
     ("cid rejects past one raw block",
      Result.is_error (Cid.of_raw_block (String.make 262145 'x')));
-    (* The pinning pipeline composes both digests into the message. *)
+    (* Chunked dag-pb vectors, pinned to ipfs-unixfs-importer (the
+       Helia/kubo reference implementation; regenerate with
+       test/js/oracle_cids.mjs). Tiny parameters exercise the
+       multi-level tree; production parameters cross the raw-block
+       boundary for real. *)
+    ("chunked cid: one tiny chunk stays a raw block",
+     Cid.of_bundle_with ~chunk_size:4 ~fanout:2 (ramp 4)
+     = "bafkreiafj3pmdubbd5re73imxsu5j6kabmheshcdoqvpfrnqvpv7bsmq3a");
+    ("chunked cid: two chunks, one level",
+     Cid.of_bundle_with ~chunk_size:4 ~fanout:2 (ramp 8)
+     = "bafybeidi3txkchykjupk3j4wfbwbzgj3skzhk2ey6hbmkgviaj7vrx4p64");
+    ("chunked cid: a trailing lone leaf still gets its own parent",
+     Cid.of_bundle_with ~chunk_size:4 ~fanout:2 (ramp 9)
+     = "bafybeib5lmbpvzcdgw65yiwyhjskzt2bs7gkgu5k72dbflnqsmmuo5qa7q");
+    ("chunked cid: four chunks fill two levels",
+     Cid.of_bundle_with ~chunk_size:4 ~fanout:2 (ramp 16)
+     = "bafybeiasle3qmuobd22vlfmyxjheaa5pqsu4byawpbednrcbwuihqrz2fe");
+    ("chunked cid: five chunks need three levels",
+     Cid.of_bundle_with ~chunk_size:4 ~fanout:2 (ramp 20)
+     = "bafybeiaypvylxcrpdril3jpir3omidycuihxgaalmrjfcvdpeoh5cgk6ny");
+    ("chunked cid: production parameters, one byte past a raw block",
+     Cid.of_bundle (ramp 262145)
+     = "bafybeibp4affrl5svfd2wwp3l2srpu76awzmvyc37zmrtap5iqydfxffuy");
+    ("chunked cid: production parameters, an exact three-chunk bundle",
+     Cid.of_bundle (ramp 786432)
+     = "bafybeiepg5bjyssjj6qquajjo6djc7tr3altcf7le3n3bqyen2f2gj7cf4");
+    ("of_bundle agrees with of_raw_block under one chunk",
+     Ok (Cid.of_bundle "hello aiken-tea\n")
+     = Cid.of_raw_block "hello aiken-tea\n");
+    (* The pinning pipeline composes both digests into the message,
+       chunking an oversize bundle instead of rejecting it. *)
     ("bundle publish_msg pairs cid with blake2b hash",
      Bundle.publish_msg "hello aiken-tea\n"
-     = Ok
-         (Registry.Publish
-            { cid =
-                "bafkreie4ind4wfulawtbjnzbmnop4xojjvvwgralnnpyhkym4ph4i6tivi";
-              frontend_hash =
-                Tea_data.string_of_hex
-                  "bfc98bca86ea2d3a92edcf3c8c0195e255c5da90f3b9be157141759db5c1179e"
-                |> Result.value ~default:""
-            }));
-    ("bundle publish_msg rejects an oversize bundle",
-     Result.is_error (Bundle.publish_msg (String.make 262145 'x')));
+     = Registry.Publish
+         { cid = "bafkreie4ind4wfulawtbjnzbmnop4xojjvvwgralnnpyhkym4ph4i6tivi";
+           frontend_hash =
+             Tea_data.string_of_hex
+               "bfc98bca86ea2d3a92edcf3c8c0195e255c5da90f3b9be157141759db5c1179e"
+             |> Result.value ~default:""
+         });
+    ("bundle publish_msg chunks an oversize bundle",
+     Bundle.publish_msg (ramp 262145)
+     = Registry.Publish
+         { cid = "bafybeibp4affrl5svfd2wwp3l2srpu76awzmvyc37zmrtap5iqydfxffuy";
+           frontend_hash =
+             Tea_data.string_of_hex
+               "7b60b9f741bb79a38689b7ebc454a6d285e9ceed9f349d29ea785a1dd2723968"
+             |> Result.value ~default:""
+         });
     ("bundle frontend_hash is 32 bytes, as well_formed requires",
      String.length (Bundle.frontend_hash "anything") = 32)
   ]

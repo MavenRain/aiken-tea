@@ -122,14 +122,13 @@ let read_file ~(path : string) : (string, string) result =
 let publish_bundle (handle : (Registry.model, Registry.msg) Tea.handle)
     ~(bytes : string) :
     (Registry.model * string, string) result Promise_js.t =
-  Bundle.publish_msg bytes
-  |> Result.fold
-       ~error:(fun message -> Promise_js.return (Error message))
-       ~ok:(fun msg -> Tea.dispatch handle msg)
+  Tea.dispatch handle (Bundle.publish_msg bytes)
 
 (* Add-and-pin on a kubo daemon's HTTP API, with the flags that make
-   the daemon derive the same raw-leaf CIDv1 the pure code computes.
-   Resolves to the daemon's CID string. *)
+   the daemon derive the same CIDv1 the pure code computes: raw leaf
+   or chunked dag-pb, since the daemon's default chunker and balanced
+   layout match of_bundle's parameters. Resolves to the daemon's CID
+   string. *)
 let add_to_daemon_js =
   Js.Unsafe.eval_string
     "(function (endpoint, hex) {\
@@ -152,25 +151,20 @@ let add_to_daemon_js =
    against the pinning service. *)
 let pin_bundle ~(endpoint : string) ~(bytes : string) :
     (string, string) result Promise_js.t =
-  Bundle.cid bytes
-  |> Result.fold
-       ~error:(fun message -> Promise_js.return (Error message))
-       ~ok:(fun local ->
-         Promise_js.bind
-           (Promise_js.attempt
-              (Promise_js.of_any
-                 (Js.Unsafe.fun_call add_to_daemon_js
-                    [| Js.Unsafe.inject (Js.string endpoint);
-                       Js.Unsafe.inject
-                         (Js.string (Tea_data.hex_of_string bytes))
-                    |])))
-           (fun outcome ->
-             Promise_js.return
-               (Result.bind outcome (fun pinned ->
-                  let pinned = Js.to_string (Js.Unsafe.coerce pinned) in
-                  if pinned = local then Ok local
-                  else
-                    Error
-                      (Printf.sprintf
-                         "daemon pinned %s but the local CID is %s" pinned
-                         local)))))
+  let local = Bundle.cid bytes in
+  Promise_js.bind
+    (Promise_js.attempt
+       (Promise_js.of_any
+          (Js.Unsafe.fun_call add_to_daemon_js
+             [| Js.Unsafe.inject (Js.string endpoint);
+                Js.Unsafe.inject (Js.string (Tea_data.hex_of_string bytes))
+             |])))
+    (fun outcome ->
+      Promise_js.return
+        (Result.bind outcome (fun pinned ->
+           let pinned = Js.to_string (Js.Unsafe.coerce pinned) in
+           if pinned = local then Ok local
+           else
+             Error
+               (Printf.sprintf "daemon pinned %s but the local CID is %s"
+                  pinned local))))

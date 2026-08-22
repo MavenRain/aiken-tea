@@ -9,5 +9,9 @@
   },
   "dependencies": {
     "@lucid-evolution/lucid": "^0.6.2"
+  },
+  "devDependencies": {
+    "blockstore-core": "^7.0.1",
+    "ipfs-unixfs-importer": "^17.0.1"
   }
 }
